@@ -59,6 +59,14 @@ object Updater {
     @Synchronized
     fun checkNow(ctx: Context): Pair<Info?, JSONArray> {
         val log = JSONArray()
+        if (LocalOnlyGuard.enabled) {
+            log.put(JSONObject().put("source", "LocalOnly").put("ok", false).put("ms", 0)
+                .put("message", "仅本地隐私版（EU Local-Only）已禁用在线更新"))
+            Prefs.setUpdateInfo(ctx, "")
+            Prefs.setUpdateCheckedAt(ctx, System.currentTimeMillis())
+            Prefs.setUpdateLog(ctx, JSONObject().put("at", System.currentTimeMillis()).put("items", log).toString())
+            return null to log
+        }
         val current = currentVersion(ctx)
         val started = System.currentTimeMillis()
         var info: Info? = null

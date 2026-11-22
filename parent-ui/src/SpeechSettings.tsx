@@ -55,8 +55,9 @@ function validate(form:any){
 export default function SpeechSettings({sessionId}:{sessionId:number}){
  const client=useQueryClient();
  const query=useQuery({queryKey:['speech',sessionId],queryFn:()=>api('/api/speech')});
- const [form,setForm]=useState<any>({mode:'system',autoRead:false}),[dirty,setDirty]=useState(false);
+ const [form,setForm]=useState<any>({mode:'auto',autoRead:false}),[dirty,setDirty]=useState(false);
  const [saved,setSaved]=useState(false),[saveError,setSaveError]=useState(''),[failedSignature,setFailedSignature]=useState('');
+ const [customDeepseekKey,setCustomDeepseekKey]=useState(false);
  // #128 本地语音自检：探测会阻塞设备端几百毫秒到 3 秒，只在点按钮时跑，不进自动保存
  const [probe,setProbe]=useState<any>(null),[probing,setProbing]=useState(false),[testing,setTesting]=useState(false);
  const errors=validate(form),validationError=Object.values(errors)[0]||'';
@@ -200,14 +201,24 @@ export default function SpeechSettings({sessionId}:{sessionId:number}){
       <FieldDescription className="text-xs">直接连接微软 Edge 免费朗读服务，无需配置密钥；网络异常时自动回落本地语音。</FieldDescription>
      </Field>
     </div>}
-    {deepseekVisible&&<div className="grid gap-4 py-4 sm:grid-cols-2">{input('deepseekKey','DeepSeek API Key（platform.deepseek.com）',true)}
+    {deepseekVisible&&<div className="grid gap-4 py-4 sm:grid-cols-2">
+     {form.deepseekInherited&&!customDeepseekKey?(
+      <Field>
+       <FieldLabel>DeepSeek API Key</FieldLabel>
+       <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-emerald-500/30 bg-emerald-500/5 px-3 py-2 text-xs text-emerald-700 dark:text-emerald-400">
+        <span>✓ 已自动共用「模型 API」中的 DeepSeek Key，无需重复填写</span>
+        <button type="button" className="underline underline-offset-2 opacity-80 hover:opacity-100" onClick={()=>setCustomDeepseekKey(true)}>单独覆盖</button>
+       </div>
+       <FieldDescription className="text-xs">需使用 DeepSeek 官方 Key（platform.deepseek.com）且账户有余额；第三方中转站不支持语音接口。</FieldDescription>
+      </Field>
+     ):input('deepseekKey','DeepSeek API Key（与「模型 API」共用）',true)}
      <Field data-invalid={!!errors.deepseekVoice}>
       <FieldLabel htmlFor="speech-deepseekVoice">DeepSeek 音色</FieldLabel>
       <Select value={form.deepseekVoice||'stella'} onValueChange={value=>change('deepseekVoice',value)}>
        <SelectTrigger id="speech-deepseekVoice" aria-label="DeepSeek 音色" className="w-full"><SelectValue>{deepseekVoices.find(([value])=>value===(form.deepseekVoice||'stella'))?.[1]}</SelectValue></SelectTrigger>
        <SelectContent>{deepseekVoices.map(([value,label])=><SelectItem key={value} value={value}>{label}</SelectItem>)}</SelectContent>
       </Select>
-      <FieldDescription className="text-xs">不填 Key 时会借用「AI 批改」里同一个 DeepSeek Key；按字符计费，1 万字约 1.5 元。</FieldDescription>
+      <FieldDescription className="text-xs">已与「模型 API」统一共用同一份 DeepSeek Key（只填一次即可）；按字符计费，1 万字约 1.5 元。</FieldDescription>
       <FieldError>{errors.deepseekVoice}</FieldError>
      </Field>
     </div>}

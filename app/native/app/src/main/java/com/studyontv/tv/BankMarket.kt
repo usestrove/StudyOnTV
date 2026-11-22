@@ -95,6 +95,7 @@ object BankMarket {
     }
 
     private fun validate(raw: String): URL {
+        LocalOnlyGuard.requireLocalUrl(raw, "题库源")
         val url = URL(raw.trim())
         require(url.userInfo == null) { "地址里不能带用户名密码" }
         require(url.toString().length <= 2048) { "地址太长" }

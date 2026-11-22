@@ -1,21 +1,21 @@
 {
-  "version": "0.5.1",
-  "versionCode": 48,
+  "version": "0.5.2",
+  "versionCode": 49,
   "force": false,
-  "notes": "fix: 补齐 SystemSettingsGuard 与配套拦截逻辑以修复 v0.5.1 CI 编译",
-  "publishedAt": "2026-11-20T07:46:14.663Z",
+  "notes": "v0.5.2\n\n新增 EU 仅本地隐私版（Local-Only）：\n- 新增 StudyOnTV-Android-TV-EU-LocalOnly 与 StudyOnTV-Mobile-EU-LocalOnly 安装包（面向欧洲及注重隐私的家庭，彻底禁用公网连接、在线更新、云端 AI/语音与在线题库/节假日联网，仅允许局域网本地服务如 Ollama 与本机系统语音，完整保留同 Wi-Fi 扫码管理，#175）\n\n语音朗读与 AI 体验修复：\n- 修复 DeepSeek 云端朗读返回流式 WAV（0xFFFFFFFF 哨兵长度）时解析失败导致电视无声的问题（#174）\n- 支持微软 Edge 免费朗读 Sec-MS-GEC v2 握手，修复部分电视返回 403 无声的问题（#179 / PR #180）\n- 统一共用「模型 API」与「题目朗读」的 DeepSeek Key（只填一次即可），无内置语音的电视自动回落 DeepSeek 朗读\n- AI 出题/批改与 DeepSeek 语音全面中文化报错（如 HTTP 402 余额不足明确提示中文原因），云端失败回落时不再吞掉真实报错\n- AI 高级设置新增 temperature 配置，兼容只接受默认温度的推理模型自动降级（#177 / PR #182）\n\n自动更新、白名单与界面修复：\n- 修复应用内自动更新下载到 100% 失败的问题：校验 APK 文件头与 Content-Type、透传跳转 Cookie，链接签名过期时自动刷新直链重试（#183）\n- 彻底修复「不计时白名单」应用连续使用超过 30 分钟后偶发重新开始计时的问题（无障碍实时窗口续查 + 白名单未退后台保活）\n- 修复 1080p 电视「退出回桌面」按钮叠在「闪卡背诵模式」卡片上的遮挡问题（#178 / PR #181）\n- 修复家长在锁屏输入密码时系统安全键盘/输入法被误判为前台应用的问题，并补全华为/荣耀手机「休眠不断网」保活指引\n- 优化家长端题库筛选侧栏布局与滚动条体验（PR #176）",
+  "publishedAt": "2026-11-22T04:31:38.261Z",
   "assets": {
     "tv": {
-      "name": "StudyOnTV-Android-TV-v0.5.1.apk",
-      "url": "https://github.com/chadyi/StudyOnTV/releases/download/v0.5.1/StudyOnTV-Android-TV-v0.5.1.apk",
-      "sha256": "a091fd5680e595839d3259394f5ea8d7f71b1a684a4f6529d58f5a55c6353769",
-      "size": 3453472
+      "name": "StudyOnTV-Android-TV-v0.5.2.apk",
+      "url": "https://github.com/chadyi/StudyOnTV/releases/download/v0.5.2/StudyOnTV-Android-TV-v0.5.2.apk",
+      "sha256": "ea3617397b38f4f75ce9105db26bb10da271c820e6a38233a4fee16d77d4130a",
+      "size": 3462240
     },
     "mobile": {
-      "name": "StudyOnTV-Mobile-v0.5.1.apk",
-      "url": "https://github.com/chadyi/StudyOnTV/releases/download/v0.5.1/StudyOnTV-Mobile-v0.5.1.apk",
-      "sha256": "1f01d3b9de8b4097f68d1a8f2a56eca8544c4809add87991eedb8f9060a52920",
-      "size": 3455125
+      "name": "StudyOnTV-Mobile-v0.5.2.apk",
+      "url": "https://github.com/chadyi/StudyOnTV/releases/download/v0.5.2/StudyOnTV-Mobile-v0.5.2.apk",
+      "sha256": "30d5b5c2c9e8e3ec31511128cd81c108f02eba9afc774bd9b323d01a11d6dbff",
+      "size": 3464629
     }
   }
 }

@@ -195,6 +195,7 @@ object Diag {
      * 若存在待上传的崩溃标记且用户已参与体验提升计划，则在后台线程上传崩溃 ZIP。
      */
     fun uploadPendingCrash(context: Context, endpoint: String, token: String) {
+        if (LocalOnlyGuard.enabled) return
         if (!Prefs.crashUploadConsent(context)) return
         if (endpoint.isBlank()) return
         if (!CrashDetector.hasPending(context)) return
@@ -223,6 +224,7 @@ object Diag {
      * 定期上报运行诊断日志与脱敏使用概览（每 6 小时最多一次；不含密码、API Key、题库内容与孩子姓名）。
      */
     fun uploadRuntimeLogsIfDue(context: Context, force: Boolean = false) {
+        if (LocalOnlyGuard.enabled) return
         if (!Prefs.crashUploadConsent(context)) return
         val endpoint = Prefs.crashEndpoint(context)
         if (endpoint.isBlank()) return

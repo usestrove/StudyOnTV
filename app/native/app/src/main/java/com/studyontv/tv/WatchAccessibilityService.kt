@@ -50,7 +50,7 @@ class WatchAccessibilityService : AccessibilityService() {
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (event?.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
             val pkg = event.packageName?.toString()
-            if (pkg != null && (pkg.contains("inputmethod") || pkg.contains("keyboard"))) return
+            if (pkg != null && Foreground.isInputMethod(this, pkg)) return
             if (pkg != null && pkg.contains("packageinstaller", ignoreCase = true)) {
                 val cls = event.className?.toString().orEmpty()
                 val texts = event.text?.mapNotNull { it?.toString() }.orEmpty()
@@ -137,5 +137,12 @@ class WatchAccessibilityService : AccessibilityService() {
         fun showGate(reason: String): Boolean = instance?.gate?.show(reason) == true
         fun hideGate() { instance?.gate?.hide() }
         fun suspendGate() { instance?.gate?.suspend() }
+        /** 实时读取当前活动窗口包名：同一应用停留超过 30 分钟无切窗事件时用于续命，避免白名单应用误掉回 pkg=null */
+        fun activeWindowPackage(context: Context): String? {
+            val svc = instance ?: return null
+            val pkg = try { svc.rootInActiveWindow?.packageName?.toString() } catch (_: Exception) { null }
+            if (pkg.isNullOrEmpty() || pkg == context.packageName || Foreground.isTransient(pkg) || Foreground.isInputMethod(context, pkg)) return null
+            return pkg
+        }
     }
 }

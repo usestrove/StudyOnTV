@@ -53,7 +53,17 @@ class WebShell(private val context: Context) {
 
         web.webViewClient = object : WebViewClient() {
             override fun shouldOverrideUrlLoading(view: WebView?, url: String?): Boolean {
+                if (LocalOnlyGuard.enabled && !LocalOnlyGuard.isLocalUrl(url)) return true
                 return !isAllowed(url)
+            }
+            override fun shouldInterceptRequest(view: WebView?, request: android.webkit.WebResourceRequest?): android.webkit.WebResourceResponse? {
+                if (LocalOnlyGuard.enabled) {
+                    val reqUrl = request?.url?.toString()
+                    if (!LocalOnlyGuard.isLocalUrl(reqUrl)) {
+                        return android.webkit.WebResourceResponse("text/plain", "utf-8", java.io.ByteArrayInputStream(ByteArray(0)))
+                    }
+                }
+                return super.shouldInterceptRequest(view, request)
             }
         }
         web.webChromeClient = WebChromeClient()
