@@ -1,7 +1,7 @@
 import {Component,useEffect,useRef,useState,lazy,Suspense,type ErrorInfo,type ReactNode} from 'react';
 import {root} from './react-root';
 import {QueryClient,QueryClientProvider,useQuery} from '@tanstack/react-query';
-import {AlertCircle,LoaderCircle,BookOpen,ClipboardCheck,SlidersHorizontal,ChartColumn,Leaf,LogOut,ArrowRight,LockKeyhole,Monitor,Settings,Sun,Moon,Laptop,ChevronsUpDown,Tv,Palette,KeyRound,CloudDownload,RadioTower,FileText,Bot,Eye,EyeOff,House,ShieldCheck,Users,Search,Volume2,X,RefreshCw} from 'lucide-react';
+import {AlertCircle,LoaderCircle,BookOpen,BookX,ClipboardCheck,SlidersHorizontal,ChartColumn,Leaf,LogOut,ArrowRight,LockKeyhole,Monitor,Settings,Sun,Moon,Laptop,ChevronsUpDown,Tv,Palette,KeyRound,CloudDownload,RadioTower,FileText,Bot,Eye,EyeOff,House,ShieldCheck,Users,Search,Volume2,X,RefreshCw} from 'lucide-react';
 import {Toaster,toast} from 'sonner';
 import {Button} from '@/components/ui/button';
 import {Dialog,DialogContent,DialogHeader,DialogTitle,DialogDescription} from '@/components/ui/dialog';
@@ -28,6 +28,7 @@ import InstallPrompt from './InstallPrompt';
 import {useIsMobile} from './hooks/use-mobile';
 const RulesPage=lazy(()=>import('./RulesPage'));
 const QuestionBank=lazy(()=>import('./QuestionBank'));
+const WrongBookPage=lazy(()=>import('./WrongBookPage'));
 const GradingPage=lazy(()=>import('./GradingPage'));
 const RecordsPage=lazy(()=>import('./RecordsPage'));
 import './styles.css';
@@ -63,11 +64,12 @@ class ErrorBoundary extends Component<{resetKey?:string;children:ReactNode},{err
  }
 }
 
-type PageId='remote'|'rules'|'bank'|'grading'|'records'|'settings';
+type PageId='remote'|'rules'|'bank'|'wrong'|'grading'|'records'|'settings';
 const pages:{id:PageId,title:string,short:string,icon:any,description:string}[]=[
  {id:'remote',title:'首页',short:'首页',icon:House,description:'状态、学习模式与今日概览'},
  {id:'grading',title:'作答批改',short:'批改',icon:ClipboardCheck,description:'处理待批作业'},
  {id:'bank',title:'题库',short:'题库',icon:BookOpen,description:'题目、分类与导入导出'},
+ {id:'wrong',title:'错题库',short:'错题',icon:BookX,description:'错题沉淀、筛选与一键加练'},
  {id:'rules',title:'学习计划',short:'计划',icon:SlidersHorizontal,description:'背诵模式、范围、时段与奖励'},
  {id:'records',title:'学情与记录',short:'学情',icon:ChartColumn,description:'薄弱项诊断、记忆曲线与使用时长'},
  {id:'settings',title:'设置',short:'设置',icon:Settings,description:'设备、备份、外观、更新与安全'}];
@@ -106,6 +108,7 @@ const searchEntries:SearchEntry[]=[
  {id:'bank-import',page:'bank',where:'题库 · 导入导出',title:'导入 / 导出题目',keywords:'导入 json 文档 导出 备份 添加题目'},
  {id:'bank-ai',page:'bank',where:'题库 · AI 出题',title:'AI 错题举一反三与模板出题',keywords:'ai 出题 生成 变式 错题 举一反三 在线题库 市场 共享题库'},
  {id:'bank-auto',page:'bank',where:'题库 · 自动补题',title:'远程题库与自动补题',keywords:'远程 题库 同步 自动补题 来源'},
+ {id:'wrong',page:'wrong',where:'错题库',title:'错题库与加练池管理',keywords:'错题 错题本 错题库 加练 加练池 清空 已掌握 复习'},
  {id:'grading',page:'grading',where:'作答批改',title:'待批改与 AI 批改',keywords:'批改 作业 待批 评分 ai 主观题 手写'},
  {id:'records',page:'records',where:'学情与记录',title:'学情诊断、顽固错题与记忆成熟度',keywords:'学情 记录 成长 统计 进度 正确率 时长 趋势 薄弱项 错题榜'},
 ];
@@ -239,7 +242,7 @@ function Login({onLogin,theme}:{onLogin:()=>void,theme:ReturnType<typeof useThem
 }
 
 function AppSidebar({page,go,pending,device,logout}:{page:PageId,go:(p:PageId)=>void,pending:number,device:any,logout:()=>void}){
- const groups:[string,PageId[]][]=[['学习',['remote','rules','bank','grading','records']],['系统',['settings']]];
+ const groups:[string,PageId[]][]=[['学习',['remote','rules','bank','wrong','grading','records']],['系统',['settings']]];
  const {isMobile,setOpenMobile}=useSidebar();
  const navigate=(p:PageId)=>{go(p);if(isMobile)setOpenMobile(false);};
  return <Sidebar collapsible="icon" variant="sidebar">
@@ -354,6 +357,7 @@ function Dashboard({sessionId,logout,theme}:{sessionId:number,logout:()=>void,th
      <Suspense fallback={<div className="flex items-center justify-center gap-2 py-16 text-sm text-muted-foreground"><LoaderCircle className="size-4 animate-spin"/>正在加载…</div>}>
       {page==='rules'&&<RulesPage state={state.data} sessionId={sessionId}/>}
       {page==='bank'&&<QuestionBank sessionId={sessionId}/>}
+      {page==='wrong'&&<WrongBookPage sessionId={sessionId} state={state.data}/>}
       {page==='grading'&&<GradingPage sessionId={sessionId}/>}
       {page==='records'&&<RecordsPage sessionId={sessionId}/>}
      </Suspense>

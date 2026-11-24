@@ -22,6 +22,9 @@ object ApkInstaller {
     @Volatile var lastError = ""
         private set
 
+    @Volatile var lastDownloadSha256 = ""
+        private set
+
     @Suppress("DEPRECATION")
     private fun signatures(ctx: Context, info: android.content.pm.PackageInfo?): Set<String> {
         if (info == null) return emptySet()
@@ -166,6 +169,7 @@ object ApkInstaller {
             validateArchive(ctx, partial)?.let { lastError = it; return null }
             if (target.exists()) target.delete()
             if (!partial.renameTo(target)) { lastError = "无法保存安装包"; return null }
+            lastDownloadSha256 = actual
             onProgress(100)
             return target
         } catch (e: Exception) {
@@ -181,6 +185,10 @@ object ApkInstaller {
         checkLocalOnlyBlocked()?.let { lastError = it; return false }
         lastError = ""
         Prefs.setUpdateInstallError(ctx, "")
+        if (!file.exists() || !file.isFile || file.length() <= 0L) {
+            lastError = "安装包不存在或已损坏，请重新下载"
+            return false
+        }
         if (!canInstall(ctx)) {
             // Android 8 起「安装未知应用」是按应用授权的，没开的话调起安装器只会失败，先把话说清楚
             lastError = "系统还没允许「题了个题」安装应用"
@@ -192,9 +200,9 @@ object ApkInstaller {
         return installView(ctx, file)
     }
 
-    /** Android 8+ 需要「允许安装未知应用」；更老的版本是全局的「未知来源」，这里不做判断 */
+    /** Android 8+ 需要「允许安装未知应用」；Device Owner 或更老的版本直接放行 */
     fun canInstall(ctx: Context): Boolean = try {
-        Build.VERSION.SDK_INT < Build.VERSION_CODES.O || ctx.packageManager.canRequestPackageInstalls()
+        UninstallGuard.owner(ctx) || Build.VERSION.SDK_INT < Build.VERSION_CODES.O || ctx.packageManager.canRequestPackageInstalls()
     } catch (_: Exception) { true }
 
     /** 「允许安装未知应用」的系统设置页；各家电视入口不同，失败就退到本应用详情页 */
@@ -217,6 +225,9 @@ object ApkInstaller {
             val params = android.content.pm.PackageInstaller.SessionParams(
                 android.content.pm.PackageInstaller.SessionParams.MODE_FULL_INSTALL)
             params.setAppPackageName(ctx.packageName)
+            if (Build.VERSION.SDK_INT >= 31) {
+                params.setRequireUserAction(android.content.pm.PackageInstaller.SessionParams.USER_ACTION_NOT_REQUIRED)
+            }
             sessionId = installer.createSession(params)
             installer.openSession(sessionId).use { session ->
                 file.inputStream().use { input ->

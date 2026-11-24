@@ -44,6 +44,16 @@ object Prefs {
     fun updateInstallError(c: Context): String = sp(c).getString("update_install_error", "") ?: ""
     fun setUpdateInstallError(c: Context, v: String) = sp(c).edit().putString("update_install_error", v).apply()
 
+    /** 是否在发现新版本时后台自动静默预下载更新包（默认关闭，EU Local-Only 恒为 false） */
+    fun autoDownloadUpdate(c: Context): Boolean = sp(c).getBoolean("auto_download_update", false)
+    fun setAutoDownloadUpdate(c: Context, v: Boolean) = sp(c).edit().putBoolean("auto_download_update", v).apply()
+
+    /** 已在本地完成校验就绪的预下载 APK 版本号与 SHA-256 */
+    fun readyApkVersion(c: Context): String = sp(c).getString("ready_apk_version", "") ?: ""
+    fun setReadyApkVersion(c: Context, v: String) = sp(c).edit().putString("ready_apk_version", v).apply()
+    fun readyApkSha256(c: Context): String = sp(c).getString("ready_apk_sha256", "") ?: ""
+    fun setReadyApkSha256(c: Context, v: String) = sp(c).edit().putString("ready_apk_sha256", v).apply()
+
     
     fun updateInProgress(c: Context): Boolean = sp(c).getLong("update_started_at", 0L).let { it > 0 && System.currentTimeMillis() - it < 10 * 60 * 1000 }
     fun setUpdateInProgress(c: Context, v: Boolean) = sp(c).edit().putLong("update_started_at", if (v) System.currentTimeMillis() else 0L).apply()

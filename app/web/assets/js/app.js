@@ -178,7 +178,7 @@
       if (xhr.readyState !== 4) return;
       var data;
       try { data = JSON.parse(xhr.responseText); } catch (e) { return done('连接设备失败'); }
-      if (xhr.status < 200 || xhr.status >= 300 || data.error) return done(data.message || '请求失败，请重试');
+      if (xhr.status < 200 || xhr.status >= 300 || data.error) return done(data.message || '请求失败，请重试', data);
       done(null, data);
     };
     xhr.onerror = function () { done('连接设备失败'); };
@@ -248,6 +248,76 @@
     for (var i = 0; i < list.length; i++) if (list[i].id === (id === undefined ? state.activeChild : id)) return list[i].name;
     return '';
   }
+  function findChild(id) {
+    var list = state.children || [];
+    for (var i = 0; i < list.length; i++) if (list[i].id === id) return list[i];
+    return null;
+  }
+  function isPinModalOpen() {
+    var modal = $('pinModal');
+    return !!(modal && modal.className.indexOf('show') >= 0);
+  }
+  function openPinModal(kid, afterMode, errorMsg) {
+    var modal = $('pinModal'), input = $('pinInput'), err = $('pinError');
+    if (!modal || !input) return;
+    state.pinTarget = { id: kid.id, name: kid.name || childName(kid.id) || '该孩子', afterMode: afterMode || 'hub' };
+    if ($('pinTitle')) $('pinTitle').textContent = '切换到「' + state.pinTarget.name + '」';
+    if (err) err.textContent = errorMsg || '';
+    input.value = '';
+    input.readOnly = isTv();
+    modal.className = 'pin-modal show';
+    focusDefault();
+    if (!isTv()) {
+      try { input.focus(); } catch (e) {}
+    }
+  }
+  function closePinModal() {
+    var modal = $('pinModal'), input = $('pinInput'), err = $('pinError');
+    if (modal) modal.className = 'pin-modal';
+    if (input) { input.value = ''; try { input.blur(); } catch (e) {} }
+    if (err) err.textContent = '';
+    state.pinTarget = null;
+    focusDefault();
+  }
+  function performChildSwitch(kidId, pin, afterMode, fromModal) {
+    if (state.busy) return;
+    var body = { id: kidId };
+    if (fromModal || (pin !== undefined && pin !== null && pin !== '')) body.pin = String(pin || '');
+    state.busy = true;
+    request('/api/children/switch', body, function (error, result) {
+      state.busy = false;
+      if (error) {
+        var code = result && result.error;
+        if (code === 'child_pin_required' || code === 'child_pin_invalid') {
+          var msg = (result && result.message) || (code === 'child_pin_invalid' ? '密码错误，请重试' : '请输入切换密码');
+          if (!isPinModalOpen()) {
+            var targetKid = findChild(kidId) || { id: kidId, name: childName(kidId) || '该孩子' };
+            openPinModal(targetKid, afterMode, msg);
+          } else {
+            if ($('pinError')) $('pinError').textContent = msg;
+            if (code === 'child_pin_invalid' && $('pinInput')) $('pinInput').value = '';
+            focusDefault();
+          }
+          return;
+        }
+        if (isPinModalOpen() && $('pinError')) $('pinError').textContent = error;
+        else toast(error);
+        return;
+      }
+      if (isPinModalOpen()) closePinModal();
+      state.children = result.items || [];
+      state.activeChild = result.active || '';
+      state.chosen = true;
+      pill();
+      if (afterMode === 'hub') {
+        loadState(function () { renderHub(); });
+      } else if (afterMode === 'start') {
+        loadState(function () { if (isHubAvailable()) renderHub(); else start(); });
+      } else {
+        loadState(function () { if (isHubAvailable()) renderHub(); else route(); });
+      }
+    });
+  }
   function applyFont() {
     var scale = Math.max(75, Math.min(200, +state.config.fontScale || 100));
     if (state.fontScale === scale) return;
@@ -315,7 +385,7 @@
           btn.className = 'btn ' + (isAct ? 'btn-primary' : 'btn-ghost') + ' focusable hub-child-btn';
           btn.setAttribute('data-action', 'hub-switch-child');
           btn.setAttribute('data-child', kid.id);
-          btn.textContent = (isAct ? '✓ ' : '') + kid.name;
+          btn.textContent = (isAct ? '✓ ' : '') + (kid.hasPin ? '🔒 ' : '') + kid.name;
           kidsBox.appendChild(btn);
         });
       }
@@ -515,6 +585,7 @@
     if (Array.isArray(card.a) && card.a.length > 0 && card.type !== 'boolean') {
       var preview = document.createElement('div');
       preview.className = 'study-choices-preview';
+      options.appendChild(preview);
       card.a.forEach(function (val, i) {
         var row = document.createElement('div');
         row.className = 'study-choice-item';
@@ -523,6 +594,9 @@
         ltr.textContent = String.fromCharCode(65 + i) + '.';
         var body = document.createElement('div');
         body.className = 'opt-body';
+        row.appendChild(ltr);
+        row.appendChild(body);
+        preview.appendChild(row);
         var optImg = Array.isArray(card.optionImages) ? card.optionImages[i] : '';
         if (optImg && MEDIA_SRC_RE.test(optImg)) {
           var img = document.createElement('img');
@@ -535,14 +609,10 @@
         if (String(val || '').trim()) {
           var txt = document.createElement('span');
           txt.className = 'opt-text';
-          if (window.SOTV_RICH) window.SOTV_RICH(txt, val); else txt.textContent = val;
           body.appendChild(txt);
+          if (window.SOTV_RICH) window.SOTV_RICH(txt, val); else txt.textContent = val;
         }
-        row.appendChild(ltr);
-        row.appendChild(body);
-        preview.appendChild(row);
       });
-      options.appendChild(preview);
     }
 
     if (!state.cardRevealed) {
@@ -571,25 +641,25 @@
     } else {
       var backBox = document.createElement('div');
       backBox.className = 'study-card-back';
+      options.appendChild(backBox);
       var ansLabel = document.createElement('div');
       ansLabel.className = 'study-back-label';
       ansLabel.textContent = '正确答案';
       var ansBody = document.createElement('div');
       ansBody.className = 'study-back-answer';
+      backBox.appendChild(ansLabel);
+      backBox.appendChild(ansBody);
       var ansStr = formatCardAnswerFallback(card);
       if (window.SOTV_RICH) window.SOTV_RICH(ansBody, ansStr || '请参考下方解析');
       else ansBody.textContent = ansStr || '请参考下方解析';
-      backBox.appendChild(ansLabel);
-      backBox.appendChild(ansBody);
 
       if (card.tip && String(card.tip).trim()) {
         var tipBody = document.createElement('div');
         tipBody.className = 'study-back-tip';
+        backBox.appendChild(tipBody);
         if (window.SOTV_RICH) window.SOTV_RICH(tipBody, '重点解析：' + card.tip);
         else tipBody.textContent = '重点解析：' + card.tip;
-        backBox.appendChild(tipBody);
       }
-      options.appendChild(backBox);
 
       if (round.focus === 'memorize') {
         var iv = card.intervals || {};
@@ -644,6 +714,7 @@
       }
     }
 
+    if (window.SOTV_MATH) window.SOTV_MATH(options);
     var readAloudBtn = $('readAloudBtn');
     if (readAloudBtn) {
       readAloudBtn.className = 'btn btn-ghost focusable read-aloud-btn';
@@ -757,6 +828,7 @@
         button.setAttribute('data-opt', index);
         var letter = document.createElement('span'); letter.className = 'letter'; letter.textContent = String.fromCharCode(65 + index);
         var body = document.createElement('span'); body.className = 'opt-body';
+        button.appendChild(letter); button.appendChild(body); options.appendChild(button);
         var optImg = Array.isArray(item.optionImages) ? item.optionImages[index] : '';
         if (optImg && MEDIA_SRC_RE.test(optImg)) {
           var img = document.createElement('img'); img.className = 'opt-image'; img.src = optImg; img.alt = '选项 ' + String.fromCharCode(65 + index);
@@ -765,12 +837,12 @@
         }
         if (String(value || '').trim()) {
           var label = document.createElement('span'); label.className = 'opt-text';
-          if (window.SOTV_RICH) window.SOTV_RICH(label, value); else label.textContent = value;
           body.appendChild(label);
+          if (window.SOTV_RICH) window.SOTV_RICH(label, value); else label.textContent = value;
         }
-        button.appendChild(letter); button.appendChild(body); options.appendChild(button);
       });
       if (item.type === 'multiple') addSubmit(options, '确认所选答案');
+      if (window.SOTV_MATH) window.SOTV_MATH(options);
     }
     // 「朗读」固定放在页脚，不再混进选项区，避免遥控器在选项之间误选
     var readAloudBtn = $('readAloudBtn');
@@ -1096,7 +1168,8 @@
       button.className = 'btn ' + (kid.active ? 'btn-primary' : 'btn-ghost') + ' focusable';
       button.setAttribute('data-action', 'start-as-child');
       button.setAttribute('data-child', kid.id);
-      button.textContent = isStart ? '开始学习 · ' + kid.name : kid.name;
+      var label = (kid.hasPin ? '🔒 ' : '') + kid.name;
+      button.textContent = isStart ? '开始学习 · ' + label : label;
       $('lockActions').appendChild(button);
     });
   }
@@ -1156,6 +1229,9 @@
   }
   function isTv() { return document.documentElement.classList.contains('tv-device'); }
   function focusables() {
+    if (isPinModalOpen()) {
+      return all('#pinModal .focusable').filter(function (el) { return !el.disabled && (el.offsetWidth > 0 || el.offsetHeight > 0); });
+    }
     var screen = document.querySelector('.screen.active');
     var list = screen ? Array.prototype.slice.call(screen.querySelectorAll('.focusable')) : [];
     // 答题反馈面板弹出时遮挡了底部页脚，排除 .quiz-foot 里的按钮，防止遥控器焦点落到面板背后消失
@@ -1221,10 +1297,41 @@
     return false;
   }
   function activate(el) {
-    if (!el) el = document.querySelector('.screen.active .focused') || document.querySelector('.focused');
+    if (!el) el = (isPinModalOpen() ? document.querySelector('#pinModal.show .focused') : null) || document.querySelector('.screen.active .focused') || document.querySelector('.focused');
     if (!el) return;
     if (el.hasAttribute('data-opt')) return choose(+el.getAttribute('data-opt'));
     var action = el.getAttribute('data-action');
+    if (action === 'pin-digit') {
+      var pIn = $('pinInput');
+      var digit = el.getAttribute('data-digit') || '';
+      if (pIn && pIn.value.length < 20) pIn.value += digit;
+      if ($('pinError')) $('pinError').textContent = '';
+      return;
+    }
+    if (action === 'pin-clear') {
+      if ($('pinInput')) $('pinInput').value = '';
+      if ($('pinError')) $('pinError').textContent = '';
+      return;
+    }
+    if (action === 'pin-back') {
+      var pBack = $('pinInput');
+      if (pBack && pBack.value.length > 0) pBack.value = pBack.value.slice(0, -1);
+      if ($('pinError')) $('pinError').textContent = '';
+      return;
+    }
+    if (action === 'pin-cancel') {
+      closePinModal();
+      return;
+    }
+    if (action === 'pin-confirm' && state.pinTarget) {
+      var pVal = $('pinInput') ? $('pinInput').value : '';
+      if (!pVal) {
+        if ($('pinError')) $('pinError').textContent = '请输入切换密码';
+        return;
+      }
+      performChildSwitch(state.pinTarget.id, pVal, state.pinTarget.afterMode, true);
+      return;
+    }
     if (action === 'submit') submit();
     if (action === 'next') proceed();
     if (action === 'back-hub') { renderHub(); return; }
@@ -1237,15 +1344,12 @@
     if (action === 'hub-switch-child' && !state.busy) {
       var hubKid = el.getAttribute('data-child');
       if (hubKid === state.activeChild) return;
-      state.busy = true;
-      request('/api/children/switch', { id: hubKid }, function (error, result) {
-        state.busy = false;
-        if (error) { toast(error); return; }
-        state.children = result.items || [];
-        state.activeChild = result.active || '';
-        state.chosen = true;
-        loadState(function () { renderHub(); });
-      });
+      var hubKidObj = findChild(hubKid);
+      if (hubKidObj && hubKidObj.hasPin) {
+        openPinModal(hubKidObj, 'hub');
+        return;
+      }
+      performChildSwitch(hubKid, '', 'hub', false);
       return;
     }
     if (action === 'reveal-card') {
@@ -1441,20 +1545,18 @@
     if (action === 'start-as-child' && !state.busy) {
       var kidId = el.getAttribute('data-child');
       var wantStart = !state.chosen || state.lockReason === 'timeup';
-      state.chosen = true;
       if (kidId === state.activeChild) {
+        state.chosen = true;
         if (isHubAvailable()) renderHub(); else if (wantStart) start();
         return;
       }
-      state.busy = true;
-      request('/api/children/switch', { id: kidId }, function (error, result) {
-        state.busy = false;
-        if (error) { toast(error); return; }
-        state.children = result.items || []; state.activeChild = result.active || ''; pill();
-        // 点名字就是为了开始：切换成功后直接开这一轮，不必再点一次
-        if (isHubAvailable()) renderHub();
-        else if (wantStart) start(); else route();
-      });
+      var kidObj = findChild(kidId);
+      var afterMode = wantStart ? 'start' : 'route';
+      if (kidObj && kidObj.hasPin) {
+        openPinModal(kidObj, afterMode);
+        return;
+      }
+      performChildSwitch(kidId, '', afterMode, false);
     }
     if (action === 'skip-review' && !state.busy) {
       state.busy = true;
@@ -1566,6 +1668,34 @@
     });
     // 只有家长页 / 实体键盘会走到这里（学习页的遥控器按键由原生层转发给 window.TV）
     document.addEventListener('keydown', function (event) {
+      if (isPinModalOpen()) {
+        if (event.keyCode === 27) { closePinModal(); event.preventDefault(); return; }
+        if (event.target && event.target.id === 'pinInput' && !event.target.readOnly) {
+          if (event.keyCode === 13) { activate($('pinConfirm')); event.preventDefault(); }
+          return;
+        }
+        if (event.keyCode >= 48 && event.keyCode <= 57) {
+          var pKeyIn = $('pinInput');
+          if (pKeyIn && pKeyIn.value.length < 20) pKeyIn.value += String(event.keyCode - 48);
+          if ($('pinError')) $('pinError').textContent = '';
+          event.preventDefault();
+          return;
+        }
+        if (event.keyCode >= 96 && event.keyCode <= 105) {
+          var pNumIn = $('pinInput');
+          if (pNumIn && pNumIn.value.length < 20) pNumIn.value += String(event.keyCode - 96);
+          if ($('pinError')) $('pinError').textContent = '';
+          event.preventDefault();
+          return;
+        }
+        if (event.keyCode === 8) {
+          var pDelIn = $('pinInput');
+          if (pDelIn && pDelIn.value.length > 0) pDelIn.value = pDelIn.value.slice(0, -1);
+          if ($('pinError')) $('pinError').textContent = '';
+          event.preventDefault();
+          return;
+        }
+      }
       if (event.target.tagName === 'INPUT' || (event.target.tagName === 'TEXTAREA' && !event.target.readOnly)) return;
       var dir = { 37: 'left', 38: 'up', 39: 'right', 40: 'down' }[event.keyCode];
       if (dir) {
@@ -1589,8 +1719,8 @@
     window.setInterval(function () {
       $('clock').textContent = new Date().toTimeString().slice(0, 5);
       if (state.screen === 'pair') return;
-      // 题目提交中：等作答响应回来再轮询，否则 start() 可能把还在途中的提交状态重置掉
-      if (!state.loaded || (state.busy && !state.feedback)) return;
+      // 题目提交中或正在输入切换密码：等操作完成再轮询，否则可能把状态重置掉
+      if (!state.loaded || (state.busy && !state.feedback) || isPinModalOpen()) return;
       var version = state.config.version, quizGeneration = state.learning.quizGeneration || 0, wasFree = !!state.learning.free, wasPure = isPureStudyMode(), prevOvKey = overrideKey(state.learning);
       loadState(function (error) {
         if (error) return;
@@ -1721,6 +1851,7 @@
     move: move,
     select: function () { activate(); },
     back: function () {
+      if (isPinModalOpen()) { closePinModal(); return; }
       if (state.screen === 'pair') { nativeCall('backToQuiz'); return; }
       if ((state.screen === 'quiz' || (state.screen === 'lock' && state.lockReason !== 'settings')) && isHubAvailable()) {
         renderHub();

@@ -16,6 +16,7 @@ class RegressionInstrumentation : Instrumentation() {
     private var home = false
     private var homeUi = false
     private var freeQuotaGate = false
+    private var st60x = false
     private var videoUrl = ""
     override fun onCreate(arguments: Bundle?) {
         super.onCreate(arguments)
@@ -27,12 +28,23 @@ class RegressionInstrumentation : Instrumentation() {
         home = arguments?.getString("home") == "1"
         homeUi = arguments?.getString("homeUi") == "1"
         freeQuotaGate = arguments?.getString("freeQuotaGate") == "1"
+        st60x = arguments?.getString("st60x") == "1"
         videoUrl = arguments?.getString("url") ?: ""
         start()
     }
 
     override fun onStart() {
         val results = Bundle()
+        if (st60x) {
+            try {
+                results.putString("stream", St60xApiRegression.run(targetContext) + "\n")
+                finish(Activity.RESULT_OK, results)
+            } catch (e: Throwable) {
+                results.putString("stream", android.util.Log.getStackTraceString(e))
+                finish(Activity.RESULT_CANCELED, results)
+            }
+            return
+        }
         if (home || homeUi || freeQuotaGate) {
             try {
                 val output = when {

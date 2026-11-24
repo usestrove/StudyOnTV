@@ -20,6 +20,8 @@ import org.json.JSONObject
 class UpdateActivity : Activity() {
     private var force = false
     private var sha256 = ""
+    private var targetVersion = ""
+    private var preDownloadedApkPath = ""
     private lateinit var status: TextView
     private var goButton: TextView? = null
     @Volatile private var installHandedOff = false
@@ -39,6 +41,7 @@ class UpdateActivity : Activity() {
             JSONObject()
         }
         val latest = data.optString("latest", "")
+        targetVersion = latest
         val current = data.optString("current", Updater.currentVersion(this))
         val notes = data.optString("notes", "")
             .lineSequence()
@@ -47,6 +50,7 @@ class UpdateActivity : Activity() {
         val url = data.optString("url", "")
         force = data.optBoolean("force", false)
         sha256 = data.optString("sha256", "")
+        preDownloadedApkPath = intent.getStringExtra("apkPath").orEmpty().trim()
 
         val palette = TvUi.palette(this)
         val tv = DeviceBridge.isTv(this)
@@ -131,9 +135,9 @@ class UpdateActivity : Activity() {
             android.widget.FrameLayout.LayoutParams.WRAP_CONTENT
         ).apply { gravity = Gravity.CENTER_HORIZONTAL })
         setContentView(scroll)
-        if (url.isEmpty()) go.isEnabled = false
+        if (url.isEmpty() && preDownloadedApkPath.isEmpty()) go.isEnabled = false
         go.requestFocus()
-        if (intent.getBooleanExtra("auto", false) && url.isNotEmpty()) {
+        if (intent.getBooleanExtra("auto", false) && (url.isNotEmpty() || preDownloadedApkPath.isNotEmpty())) {
             go.post { startUpdate(url, go, progress) }
         }
     }
@@ -145,6 +149,7 @@ class UpdateActivity : Activity() {
         if (error.isNotEmpty()) {
             installHandedOff = false
             Prefs.setUpdateInProgress(this, false)
+            Updater.updateInstallState("error", 100, error, targetVersion)
             status.text = "$error。可以点「立即更新」再试一次，或用「手动下载」装。"
             goButton?.isEnabled = true
             goButton?.text = "重试安装"
@@ -160,12 +165,24 @@ class UpdateActivity : Activity() {
     override fun onDestroy() {
         if (!installHandedOff) {
             Prefs.setUpdateInProgress(this, false)
+            if (Updater.currentInstallSnapshot().state == "installing") {
+                Updater.resetInstallState()
+            }
         }
         super.onDestroy()
     }
 
     @Synchronized
+    private fun resolvePreDownloadedApk(): java.io.File? {
+        val path = preDownloadedApkPath
+        if (path.isEmpty()) return null
+        val file = java.io.File(path)
+        return if (file.exists() && file.isFile && isCachedApkMatching(file, sha256, deleteOnMismatch = false)) file else null
+    }
+
+    @Synchronized
     private fun hasValidCachedApk(): Boolean {
+        if (resolvePreDownloadedApk() != null) return true
         val ready = ApkInstaller.apkFile(this)
         if (!ApkInstaller.alreadyDownloaded(this, 0)) return false
         return isCachedApkMatching(ready, sha256, deleteOnMismatch = true)
@@ -199,10 +216,12 @@ class UpdateActivity : Activity() {
     
     private fun startUpdate(url: String, button: TextView, progress: android.widget.ProgressBar? = null) {
         if (!button.isEnabled) return
-        if (url.isEmpty()) { button.text = "没有下载地址"; return }
+        val preDownloaded = resolvePreDownloadedApk()
+        if (url.isEmpty() && preDownloaded == null) { button.text = "没有下载地址"; return }
 
         if (!ApkInstaller.canInstall(this)) {
             // Android 8+ 是按应用授权的：没开之前调起安装器只会失败，先去设置里打开
+            Updater.updateInstallState("error", 100, "系统尚未允许「题了个题」安装未知应用，请在设备上授权后重试", targetVersion)
             status.text = "先允许「题了个题」安装应用，允许后返回这里再点一次"
             try {
                 GateService.openingSystemPage(parentAuthorized = true)
@@ -220,13 +239,14 @@ class UpdateActivity : Activity() {
         button.text = "准备安装…"
         Thread {
             try {
-                val ready = ApkInstaller.apkFile(this)
-                if (hasValidCachedApk()) {
+                val ready = resolvePreDownloadedApk() ?: if (hasValidCachedApk()) ApkInstaller.apkFile(this) else null
+                if (ready != null) {
                     val installed = ApkInstaller.install(this, ready)
                     if (installed) {
                         installHandedOff = true
                     } else {
                         Prefs.setUpdateInProgress(this, false)
+                        Updater.updateInstallState("error", 100, ApkInstaller.lastError.ifEmpty { "系统没有接受这次安装" }, targetVersion)
                     }
                     runOnUiThread {
                         if (installed) {
@@ -271,6 +291,7 @@ class UpdateActivity : Activity() {
                 }
             } catch (e: Exception) {
                 Prefs.setUpdateInProgress(this, false)
+                Updater.updateInstallState("error", 0, "更新准备失败：${e.message ?: e.javaClass.simpleName}", targetVersion)
                 Diag.error("Update", "update task failed", e)
                 runOnUiThread {
                     button.isEnabled = true

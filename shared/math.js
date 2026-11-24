@@ -1,8 +1,9 @@
 (function () {
   'use strict';
   var queue = [], loading = false, failed = false;
-  function render(element) {
-    if (!element || !document.documentElement.contains(element) || typeof window.renderMathInElement !== 'function') return;
+  function render(element, requireConnected) {
+    if (!element || typeof window.renderMathInElement !== 'function') return;
+    if (requireConnected && document.documentElement && !document.documentElement.contains(element)) return;
     try {
       window.renderMathInElement(element, {
         delimiters: [
@@ -148,7 +149,7 @@
   }
   window.SOTV_MATH = function (element) {
     if (!element) return;
-    if (typeof window.renderMathInElement === 'function') { render(element); return; }
+    if (typeof window.renderMathInElement === 'function') { render(element, false); return; }
     if (failed) return;
     if (!/\$|\\[\[(]|\\begin\{/.test(element.textContent || '')) return;
     if (queue.indexOf(element) < 0) queue.push(element);
@@ -166,7 +167,7 @@
         if (typeof window.renderMathInElement !== 'function') { failLoad(); return; }
         var pending = queue.slice();
         queue = [];
-        pending.forEach(render);
+        pending.forEach(function (el) { render(el, true); });
       });
     });
   };

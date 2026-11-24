@@ -28,6 +28,7 @@ import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Card, CardContent } from '@/components/ui/card';
 import { api } from './api';
+import { ClearExtraPoolButton } from './components/ClearExtraPoolButton';
 import { normalizeRules, ruleSchema, zoneOptions, type Rules } from './schema';
 import TimePoints from './TimePoints';
 import WatchWhitelistField from './WatchWhitelistField';
@@ -303,6 +304,9 @@ export default function RulesPage({ state, sessionId }: { state: any; sessionId:
   }, [videosKey, videoFocused]);
   const client = useQueryClient();
   const [tab, setTab] = useState<'task' | 'time' | 'scope' | 'more'>('task');
+  const [gradeSubjectMode, setGradeSubjectMode] = useState(
+    () => Object.keys(initial.gradeSubjects || {}).length > 0,
+  );
   const bankMeta = useQuery({
     queryKey: ['bank-meta', sessionId],
     queryFn: () => api('/api/questions/meta'),
@@ -321,8 +325,19 @@ export default function RulesPage({ state, sessionId }: { state: any; sessionId:
   };
   const configSnapshot = state?.config ? JSON.stringify(state.config) : '';
   const activeChildId = state?.child?.id ?? '';
+  const lastChildId = useRef(activeChildId);
   useEffect(() => {
-    if (state?.config && !form.formState.isDirty) form.reset(normalizeRules(state.config));
+    if (state?.config && !form.formState.isDirty) {
+      const normalized = normalizeRules(state.config);
+      form.reset(normalized);
+      const hasRemote = Object.keys(normalized.gradeSubjects || {}).length > 0;
+      if (lastChildId.current !== activeChildId) {
+        lastChildId.current = activeChildId;
+        setGradeSubjectMode(hasRemote);
+      } else if (hasRemote) {
+        setGradeSubjectMode(true);
+      }
+    }
   }, [activeChildId, configSnapshot]);
   // 失败后记住失败时的值，避免 isPending 变化触发同一个值反复自动重试（网络断开时每 0.8 秒弹一次错误）。
   const failedSignature = useRef('');
@@ -402,6 +417,45 @@ export default function RulesPage({ state, sessionId }: { state: any; sessionId:
         : 'saved';
   const statusNode = <SaveStatus state={saveState} />;
   const supervisionEnabled = c.supervisionEnabled !== false;
+
+  const gradeSubjects = (c.gradeSubjects || {}) as Record<string, string[]>;
+  const gradeSubjectEntries = Object.entries(gradeSubjects);
+  const allScopeLevels = Array.from(new Set([...scopeLevels, ...Object.keys(gradeSubjects)]));
+  const gradeSubjectSummary = gradeSubjectEntries.length
+    ? `已配置 ${gradeSubjectEntries.length} 个年级：${gradeSubjectEntries
+        .map(([g, subs]) => `${g}(${subs.length ? subs.join('、') : '全部科目'})`)
+        .join('、')}`
+    : '暂未勾选年级；请勾选下方年级，或点击「从当前年级×科目一键导入」';
+
+  const toggleGradeInMap = (level: string) => {
+    const next = { ...gradeSubjects };
+    if (level in next) delete next[level];
+    else next[level] = [];
+    change('gradeSubjects', next);
+  };
+
+  const toggleSubjectInGrade = (level: string, subject: string) => {
+    const current = Array.isArray(gradeSubjects[level]) ? gradeSubjects[level] : [];
+    const nextSubs = current.includes(subject)
+      ? current.filter(s => s !== subject)
+      : [...current, subject];
+    change('gradeSubjects', { ...gradeSubjects, [level]: nextSubs });
+  };
+
+  const importFromFlatScope = () => {
+    const targetLevels = (c.quizLevels?.length ? c.quizLevels : scopeLevels).filter(Boolean);
+    if (!targetLevels.length) {
+      toast.error('题库里还没有年级可导入');
+      return;
+    }
+    const targetSubjects = (c.quizSubjects || []).filter(Boolean);
+    const next: Record<string, string[]> = {};
+    targetLevels.forEach(lvl => {
+      next[lvl] = [...targetSubjects];
+    });
+    change('gradeSubjects', next);
+    toast.success(`已从当前设置导入 ${targetLevels.length} 个年级`);
+  };
 
   const rewardAndQuotaFields = (
     <FieldGroup className={fieldGroup}>
@@ -842,51 +896,164 @@ export default function RulesPage({ state, sessionId }: { state: any; sessionId:
                 </Field>
                 <Field orientation="responsive" className="py-3.5">
                   <FieldContent>
-                    <FieldTitle>科目</FieldTitle>
-                    <FieldDescription className="text-xs leading-5">只从选中的科目抽题</FieldDescription>
+                    <FieldTitle>按年级分别设置科目（主从组合）</FieldTitle>
+                    <FieldDescription className="text-xs leading-5">
+                      开启后可为不同年级指定不同科目（例如：三年级只练英语，四年级练语文/数学/英语）；关闭则恢复扁平多选
+                    </FieldDescription>
                   </FieldContent>
-                  <div className="flex min-w-0 flex-wrap gap-2">
-                    {scopeSubjects.length ? (
-                      scopeSubjects.map(v => (
-                        <FieldLabel
-                          key={v}
-                          className="cursor-pointer rounded-lg border border-border/70 px-3 py-2 font-normal transition-colors hover:bg-muted/40 has-data-[state=checked]:border-primary/40 has-data-[state=checked]:bg-primary/5"
-                        >
-                          <Checkbox
-                            checked={inScope('quizSubjects', v)}
-                            onCheckedChange={() => toggleScope('quizSubjects', v)}
-                          />
-                          <span>{v}</span>
-                        </FieldLabel>
-                      ))
-                    ) : (
-                      <FieldDescription className="text-xs">题库里还没有科目</FieldDescription>
-                    )}
-                  </div>
+                  <Switch
+                    aria-label="按年级分别设置科目"
+                    className="w-8! shrink-0"
+                    checked={gradeSubjectMode}
+                    onCheckedChange={checked => {
+                      setGradeSubjectMode(checked);
+                      if (!checked && Object.keys(gradeSubjects).length > 0) {
+                        change('gradeSubjects', {});
+                      }
+                    }}
+                  />
                 </Field>
-                <Field orientation="responsive" className="py-3.5">
-                  <FieldContent>
-                    <FieldTitle>年级</FieldTitle>
-                  </FieldContent>
-                  <div className="flex min-w-0 flex-wrap gap-2">
-                    {scopeLevels.length ? (
-                      scopeLevels.map(v => (
-                        <FieldLabel
-                          key={v}
-                          className="cursor-pointer rounded-lg border border-border/70 px-3 py-2 font-normal transition-colors hover:bg-muted/40 has-data-[state=checked]:border-primary/40 has-data-[state=checked]:bg-primary/5"
-                        >
-                          <Checkbox
-                            checked={inScope('quizLevels', v)}
-                            onCheckedChange={() => toggleScope('quizLevels', v)}
-                          />
-                          <span>{v}</span>
-                        </FieldLabel>
-                      ))
-                    ) : (
-                      <FieldDescription className="text-xs">题库里还没有年级</FieldDescription>
-                    )}
-                  </div>
-                </Field>
+                {gradeSubjectMode ? (
+                  <Field className="py-3.5">
+                    <div className="space-y-3">
+                      <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border/70 bg-muted/35 px-3 py-2">
+                        <p className="min-w-0 flex-1 text-xs leading-5 text-muted-foreground">
+                          {gradeSubjectSummary}
+                        </p>
+                        {(scopeLevels.length > 0 || (c.quizLevels?.length || 0) > 0) && (
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            className="h-7 px-2 text-xs"
+                            onClick={importFromFlatScope}
+                          >
+                            从当前年级×科目一键导入
+                          </Button>
+                        )}
+                      </div>
+                      {allScopeLevels.length ? (
+                        <div className="space-y-2">
+                          {allScopeLevels.map(lvl => {
+                            const enabled = lvl in gradeSubjects;
+                            const chosenSubs = Array.isArray(gradeSubjects[lvl])
+                              ? gradeSubjects[lvl]
+                              : [];
+                            const levelSubjects = Array.from(
+                              new Set([...scopeSubjects, ...chosenSubs]),
+                            );
+                            return (
+                              <div
+                                key={lvl}
+                                className={`rounded-lg border p-3 transition-colors ${
+                                  enabled
+                                    ? 'border-primary/40 bg-primary/[0.03]'
+                                    : 'border-border/70 bg-background'
+                                }`}
+                              >
+                                <div className="flex flex-wrap items-center justify-between gap-2">
+                                  <FieldLabel className="cursor-pointer font-medium">
+                                    <Checkbox
+                                      checked={enabled}
+                                      onCheckedChange={() => toggleGradeInMap(lvl)}
+                                    />
+                                    <span>{lvl}</span>
+                                  </FieldLabel>
+                                  {enabled && (
+                                    <Badge variant="secondary" className="text-[11px] font-normal">
+                                      {chosenSubs.length
+                                        ? `已选 ${chosenSubs.length} 科`
+                                        : '全部科目'}
+                                    </Badge>
+                                  )}
+                                </div>
+                                {enabled && (
+                                  <div className="mt-2.5 space-y-1.5 border-t border-border/50 pt-2.5">
+                                    <p className="text-[11px] text-muted-foreground">
+                                      选择该年级要练习的科目（不勾选表示该年级全部科目）：
+                                    </p>
+                                    {levelSubjects.length ? (
+                                      <div className="flex flex-wrap gap-2">
+                                        {levelSubjects.map(sub => (
+                                          <FieldLabel
+                                            key={sub}
+                                            className="cursor-pointer rounded-md border border-border/70 bg-background px-2.5 py-1.5 text-xs font-normal transition-colors hover:bg-muted/40 has-data-[state=checked]:border-primary/40 has-data-[state=checked]:bg-primary/10"
+                                          >
+                                            <Checkbox
+                                              checked={chosenSubs.includes(sub)}
+                                              onCheckedChange={() => toggleSubjectInGrade(lvl, sub)}
+                                            />
+                                            <span>{sub}</span>
+                                          </FieldLabel>
+                                        ))}
+                                      </div>
+                                    ) : (
+                                      <p className="text-xs text-muted-foreground">
+                                        题库里还没有科目，将练习该年级全部题目
+                                      </p>
+                                    )}
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      ) : (
+                        <FieldDescription className="text-xs">题库里还没有年级</FieldDescription>
+                      )}
+                    </div>
+                  </Field>
+                ) : (
+                  <>
+                    <Field orientation="responsive" className="py-3.5">
+                      <FieldContent>
+                        <FieldTitle>科目</FieldTitle>
+                        <FieldDescription className="text-xs leading-5">只从选中的科目抽题</FieldDescription>
+                      </FieldContent>
+                      <div className="flex min-w-0 flex-wrap gap-2">
+                        {scopeSubjects.length ? (
+                          scopeSubjects.map(v => (
+                            <FieldLabel
+                              key={v}
+                              className="cursor-pointer rounded-lg border border-border/70 px-3 py-2 font-normal transition-colors hover:bg-muted/40 has-data-[state=checked]:border-primary/40 has-data-[state=checked]:bg-primary/5"
+                            >
+                              <Checkbox
+                                checked={inScope('quizSubjects', v)}
+                                onCheckedChange={() => toggleScope('quizSubjects', v)}
+                              />
+                              <span>{v}</span>
+                            </FieldLabel>
+                          ))
+                        ) : (
+                          <FieldDescription className="text-xs">题库里还没有科目</FieldDescription>
+                        )}
+                      </div>
+                    </Field>
+                    <Field orientation="responsive" className="py-3.5">
+                      <FieldContent>
+                        <FieldTitle>年级</FieldTitle>
+                      </FieldContent>
+                      <div className="flex min-w-0 flex-wrap gap-2">
+                        {scopeLevels.length ? (
+                          scopeLevels.map(v => (
+                            <FieldLabel
+                              key={v}
+                              className="cursor-pointer rounded-lg border border-border/70 px-3 py-2 font-normal transition-colors hover:bg-muted/40 has-data-[state=checked]:border-primary/40 has-data-[state=checked]:bg-primary/5"
+                            >
+                              <Checkbox
+                                checked={inScope('quizLevels', v)}
+                                onCheckedChange={() => toggleScope('quizLevels', v)}
+                              />
+                              <span>{v}</span>
+                            </FieldLabel>
+                          ))
+                        ) : (
+                          <FieldDescription className="text-xs">题库里还没有年级</FieldDescription>
+                        )}
+                      </div>
+                    </Field>
+                  </>
+                )}
                 <Field orientation="responsive" className="py-3.5">
                   <FieldContent>
                     <FieldTitle>没做过的题先出</FieldTitle>
@@ -1195,6 +1362,18 @@ export default function RulesPage({ state, sessionId }: { state: any; sessionId:
                     </Field>
                   </>
                 )}
+                <Field orientation="responsive" className="py-3.5">
+                  <FieldContent>
+                    <FieldTitle>当前加练池</FieldTitle>
+                    <FieldDescription className="text-xs leading-5">
+                      当前待完成加练 {Number(state?.learning?.extraPool) || 0} 题；积压过多时可一键清空，不会删除原题库与错题记录
+                    </FieldDescription>
+                  </FieldContent>
+                  <ClearExtraPoolButton
+                    sessionId={sessionId}
+                    count={Number(state?.learning?.extraPool) || 0}
+                  />
+                </Field>
               </FieldGroup>
             </FieldSet>
           </Panel>

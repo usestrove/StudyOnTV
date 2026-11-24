@@ -130,6 +130,44 @@ class LearningEngine(
             return round.optString("mode") == "practice" || isBaseDone(round)
         }
 
+        /** 从精准加练队列中挑选下一道有效题号，同时收集已失效（被删或暂停）的题号以便清理。 */
+        internal fun selectNextExtraQueueId(
+            queueIds: List<String>,
+            lastId: String?,
+            isValid: (String) -> Boolean
+        ): Pair<String?, List<String>> {
+            val stale = mutableListOf<String>()
+            var fallback: String? = null
+            for (qid in queueIds) {
+                if (!isValid(qid)) {
+                    stale.add(qid)
+                    continue
+                }
+                if (qid != lastId) return qid to stale
+                if (fallback == null) fallback = qid
+            }
+            return fallback to stale
+        }
+
+        /** 清空加练池时对进行中轮次的收敛动作，防止电视端卡在「加练中 0/0」。 */
+        internal enum class ClearExtraRoundAction { NONE, SETTLE_PASS, SETTLE_FAIL, CLEAR_EXTRA_FLAG }
+
+        internal fun planClearExtraActiveRound(round: JSONObject?, supervisionEnabled: Boolean): ClearExtraRoundAction {
+            if (round == null || round.has("pendingReview")) return ClearExtraRoundAction.NONE
+            val mode = round.optString("mode")
+            if (mode == "practice") {
+                return if (round.optBoolean("extra")) ClearExtraRoundAction.CLEAR_EXTRA_FLAG else ClearExtraRoundAction.NONE
+            }
+            if (!isBaseDone(round)) {
+                return if (round.optBoolean("extra")) ClearExtraRoundAction.CLEAR_EXTRA_FLAG else ClearExtraRoundAction.NONE
+            }
+            val rules = round.optJSONObject("rules")
+            val passRatio = rules?.optDouble("passRatio", 0.6) ?: 0.6
+            val passed = mode in listOf("streak", "count") ||
+                round.optInt("correct") >= ceil(round.optInt("target") * passRatio).toInt()
+            return if (passed) ClearExtraRoundAction.SETTLE_PASS else ClearExtraRoundAction.SETTLE_FAIL
+        }
+
         /** 当前是否存在可用观看额度（答题赚取额度 或 每日/开机免费额度）。 */
         internal fun hasUsableWatchQuota(remainingMs: Long, freeQuotaMs: Long): Boolean =
             (remainingMs / 1000L) > 0L || (freeQuotaMs / 1000L) > 0L
@@ -206,6 +244,87 @@ class LearningEngine(
                 val text = opts?.optString(k).orEmpty().trim()
                 if (text.isEmpty()) label else "$label. $text"
             }
+        }
+
+        private fun isCjkChar(c: Char): Boolean =
+            c in '\u4E00'..'\u9FFF' || c in '\u3400'..'\u4DBF' || c in '\uF900'..'\uFAFF'
+
+        /**
+         * 去掉两个汉字之间的空白字符。
+         * 纯字符区间循环实现，避免 Android ICU 正则不支持 OpenJDK 的 `\p{IsHan}` 导致 `<clinit>` 闪退（ST-608）。
+         */
+        internal fun collapseCjkSpaces(text: String): String {
+            if (text.isEmpty()) return ""
+            val sb = StringBuilder(text.length)
+            var i = 0
+            while (i < text.length) {
+                val c = text[i]
+                if (c.isWhitespace()) {
+                    var j = i + 1
+                    while (j < text.length && text[j].isWhitespace()) j++
+                    val prevIsCjk = sb.isNotEmpty() && isCjkChar(sb[sb.length - 1])
+                    val nextIsCjk = j < text.length && isCjkChar(text[j])
+                    if (!(prevIsCjk && nextIsCjk)) {
+                        sb.append(text, i, j)
+                    }
+                    i = j
+                } else {
+                    sb.append(c)
+                    i++
+                }
+            }
+            return sb.toString()
+        }
+
+        internal fun normalizeTextExact(value: String): String =
+            Normalizer.normalize(value.trim(), Normalizer.Form.NFKC)
+                .lowercase(java.util.Locale.ROOT)
+                .replace(Regex("\\s+"), " ")
+
+        /**
+         * 简答/填空判分归一化：排除自然语言标点（中英文句号、逗号、顿号、问号、感叹号、引号、括号等），
+         * 同时保留小数点（数字间的 '.'）与数学语义符号（+ - * / % = < > ^），避免误伤数值/公式答案。
+         */
+        internal fun normalizeTextIgnoringPunctuation(value: String): String {
+            val base = normalizeTextExact(value)
+            if (base.isEmpty()) return ""
+            val sb = StringBuilder(base.length)
+            for (i in base.indices) {
+                val c = base[i]
+                val keepMath = c == '+' || c == '-' || c == '*' || c == '/' ||
+                    c == '%' || c == '=' || c == '<' || c == '>' || c == '^'
+                val keepDecimal = c == '.' &&
+                    i > 0 && i + 1 < base.length &&
+                    base[i - 1].isDigit() && base[i + 1].isDigit()
+                if (keepMath || keepDecimal) {
+                    sb.append(c)
+                    continue
+                }
+                val type = Character.getType(c).toByte()
+                val isPunctuation = type == Character.DASH_PUNCTUATION ||
+                    type == Character.START_PUNCTUATION ||
+                    type == Character.END_PUNCTUATION ||
+                    type == Character.CONNECTOR_PUNCTUATION ||
+                    type == Character.OTHER_PUNCTUATION ||
+                    type == Character.INITIAL_QUOTE_PUNCTUATION ||
+                    type == Character.FINAL_QUOTE_PUNCTUATION
+                sb.append(if (isPunctuation) ' ' else c)
+            }
+            return collapseCjkSpaces(
+                sb.toString()
+                    .trim()
+                    .replace(Regex("\\s+"), " ")
+            )
+        }
+
+        internal fun matchesTextAnswer(actual: String, expected: String): Boolean {
+            val exactActual = normalizeTextExact(actual)
+            val exactExpected = normalizeTextExact(expected)
+            if (exactActual.isEmpty() || exactExpected.isEmpty()) return false
+            if (exactActual == exactExpected) return true
+            val strippedActual = normalizeTextIgnoringPunctuation(actual)
+            val strippedExpected = normalizeTextIgnoringPunctuation(expected)
+            return strippedActual.isNotEmpty() && strippedActual == strippedExpected
         }
     }
 
@@ -478,11 +597,105 @@ class LearningEngine(
                     .put("until", if (ms == 0L) 0L else System.currentTimeMillis() + ms)
                     .put("untilElapsed", if (ms == 0L) 0L else android.os.SystemClock.elapsedRealtime() + ms).toString())
             }
+            "clear_extra" -> {
+                val cleared = clearExtraPool().optLong("cleared", 0L)
+                store.logEvent("remote", JSONObject().put("action", action).put("cleared", cleared).put("source", source))
+                return status()
+            }
             else -> throw IllegalArgumentException("未知操作")
         }
         flushUsage()
         store.logEvent("remote", JSONObject().put("action", action).put("minutes", minutes).put("source", source))
         return status()
+    }
+
+    /** ST-601：将错题库中选中的有效题目去重加入精准加练队列，并同步增加加练池计数。 */
+    @Synchronized
+    fun addWrongToExtraPool(ids: List<String>): JSONObject {
+        day()
+        val db = store.writableDatabase
+        var added = 0
+        var nextPool = 0L
+        var queue: List<String> = emptyList()
+        db.beginTransaction()
+        try {
+            added = store.addToExtraQueue(ids)
+            queue = store.extraQueue()
+            val currentPool = number("extra_pool")
+            nextPool = maxOf(currentPool + added.toLong(), queue.size.toLong())
+            put("extra_pool", nextPool)
+            if (added > 0) {
+                store.logEvent("extra_added", JSONObject().put("count", added).put("source", "wrong_book"))
+            }
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+            publishNavigation()
+        }
+        return JSONObject()
+            .put("ok", true)
+            .put("added", added)
+            .put("extraPool", nextPool)
+            .put("extraQueueIds", JSONArray(queue))
+            .put("learning", status())
+    }
+
+    /** ST-602：原子清空加练池、错题累积进度与精准加练队列；若当前轮次处于加练阶段则妥善收敛不卡死。 */
+    @Synchronized
+    fun clearExtraPool(): JSONObject {
+        day()
+        val db = store.writableDatabase
+        var cleared = 0L
+        db.beginTransaction()
+        try {
+            cleared = number("extra_pool")
+            put("extra_pool", 0)
+            put("wrong_progress", 0)
+            store.clearExtraQueue()
+
+            val round = active()
+            val config = store.config()
+            val supervisionEnabled = config.optBoolean("supervisionEnabled", true)
+            when (planClearExtraActiveRound(round, supervisionEnabled)) {
+                ClearExtraRoundAction.SETTLE_PASS, ClearExtraRoundAction.SETTLE_FAIL -> {
+                    val r = round!!
+                    val passed = planClearExtraActiveRound(r, supervisionEnabled) == ClearExtraRoundAction.SETTLE_PASS
+                    val voluntary = isVoluntary(r, supervisionEnabled)
+                    val rules = r.optJSONObject("rules") ?: config
+                    var grant = 0L
+                    if (passed && !voluntary) {
+                        val requested = if (rules.optBoolean("difficultyRewardEnabled")) r.optLong("earnedMs")
+                        else rules.optLong("sessionMinutes", 10) * 60000L
+                        val budget = time.dailyLimit(limitConfig(config)) - number("used_ms") - number("credit_ms") - freeBalance()
+                        grant = min(requested, budget.coerceAtLeast(0))
+                        put("credit_ms", number("credit_ms") + grant)
+                        store.logEvent("quiz_pass", JSONObject().put("roundId", r.optString("id")).put("minutes", grant / 60000.0))
+                    }
+                    store.logEvent("quiz", JSONObject().put("native", true).put("voluntary", voluntary)
+                        .put("total", r.optInt("answered")).put("correct", r.optInt("correct")).put("passed", passed))
+                    store.set("active_round", "")
+                    put("quiz_generation", number("quiz_generation") + 1)
+                }
+                ClearExtraRoundAction.CLEAR_EXTRA_FLAG -> {
+                    val r = round!!
+                    r.put("extra", false)
+                    store.set("active_round", r.toString())
+                    put("quiz_generation", number("quiz_generation") + 1)
+                }
+                ClearExtraRoundAction.NONE -> Unit
+            }
+
+            store.logEvent("extra_pool_cleared", JSONObject().put("cleared", cleared))
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+            publishNavigation()
+        }
+        return JSONObject()
+            .put("ok", true)
+            .put("cleared", cleared)
+            .put("extraPool", 0)
+            .put("learning", status())
     }
 
     private fun bootCount(): Int = try {
@@ -751,9 +964,11 @@ class LearningEngine(
     private fun nextQuestion(round: JSONObject) {
         val config = store.config()
         val subjects = effectiveSubjects(config, round)
+        val hasExplicitSubject = round.optString("subjectFilter").trim().isNotEmpty()
         val levels = scopeValues(config, "quizLevels")
         val selectedLevel = round.optString("level")
         val banks = effectiveBanks(config, round)
+        val gradeSubjects = LocalStore.parseGradeSubjects(config.optJSONObject("gradeSubjects"))
         val focus = round.optString("focus")
         val spaced = config.optBoolean("spacedRepetitionEnabled") || focus == "due"
         val spacedWrongOnly = config.optString("spacedScope") == "wrong_only"
@@ -782,14 +997,32 @@ class LearningEngine(
         }
 
         val last = round.optJSONObject("question")?.optString("id")?.takeIf { it.isNotEmpty() }
+
+        // ST-601：加练阶段优先从家长精准加入的 extra_queue 取有效题目，自动清理已删或已暂停的失效项
+        var queuedQuestion: JSONObject? = null
+        if (extraStage) {
+            val queueIds = store.extraQueue()
+            if (queueIds.isNotEmpty()) {
+                val fetched = HashMap<String, JSONObject>()
+                val (pickedId, staleIds) = selectNextExtraQueueId(queueIds, last) { qid ->
+                    val found = store.questionById(qid, enabledOnly = true)
+                    if (found != null) fetched[qid] = found
+                    found != null
+                }
+                for (stale in staleIds) store.popExtraQueue(stale)
+                if (pickedId != null) queuedQuestion = fetched[pickedId]
+            }
+        }
+
         fun query(exclude: String?, onlyWrong: Boolean = false, missedOnly: Boolean = false): JSONObject? =
             store.pickQuestion(
                 subjects = subjects, levels = levels, selectedLevel = selectedLevel, banks = banks,
                 spaced = spaced, wrongFirst = wrongFirst, coverageFirst = coverageFirst, newFirst = newFirst,
-                excludeId = exclude, onlyWrong = onlyWrong, missedOnly = missedOnly
+                excludeId = exclude, onlyWrong = onlyWrong, missedOnly = missedOnly,
+                gradeSubjects = gradeSubjects, explicitSubjectFilter = hasExplicitSubject
             )
 
-        val question = when {
+        val question = queuedQuestion ?: when {
             focus == "wrong" -> query(last, onlyWrong = true) ?: query(null, onlyWrong = true)
                 ?: query(last) ?: query(null)
             wrongFirst && extraStage -> query(last, onlyWrong = true)
@@ -799,7 +1032,7 @@ class LearningEngine(
                 ?: query(last) ?: query(null)
             else -> query(last) ?: query(null)
         } ?: throw IllegalArgumentException(
-            if (subjects.isNotEmpty() || levels.isNotEmpty() || banks.isNotEmpty())
+            if (subjects.isNotEmpty() || levels.isNotEmpty() || banks.isNotEmpty() || gradeSubjects.isNotEmpty())
                 "当前答题范围没有题目，请检查题库的科目 / 年级或调整答题范围"
             else "题库为空，请由家长添加题目"
         )
@@ -933,10 +1166,18 @@ class LearningEngine(
         if (round == null || (!round.optBoolean("voluntary") && round.optString("mode") != c.getString("playMode"))) {
             var selectedLevel = ""
             val subjects = if (requestedSubject.isNotEmpty()) listOf(requestedSubject) else scopeValues(c, "quizSubjects")
+            val hasExplicitSubject = requestedSubject.isNotEmpty()
             val banks = if (requestedBank.isNotEmpty()) listOf(requestedBank) else scopeValues(c, "quizBanks")
             val allowedLevels = scopeValues(c, "quizLevels")
+            val gradeSubjects = LocalStore.parseGradeSubjects(c.optJSONObject("gradeSubjects"))
             if (c.optBoolean("childSelectLevel")) {
-                val choices = store.distinctLevels(allowedLevels = allowedLevels, subjects = subjects, banks = banks)
+                val choices = store.distinctLevels(
+                    allowedLevels = allowedLevels,
+                    subjects = subjects,
+                    banks = banks,
+                    gradeSubjects = gradeSubjects,
+                    explicitSubjectFilter = hasExplicitSubject
+                )
                 require(choices.isNotEmpty()) { "请先为启用题目标注年级，或关闭孩子选择年级" }
                 if (requestedLevel == null && choices.size > 1) return JSONObject().put("chooseLevel", JSONArray(choices)).put("status", st)
                 selectedLevel = requestedLevel ?: choices.single()
@@ -946,7 +1187,8 @@ class LearningEngine(
             if (focus == "wrong") {
                 val sampleWrong = store.pickQuestion(
                     subjects = subjects, levels = allowedLevels, selectedLevel = selectedLevel,
-                    banks = banks, onlyWrong = true
+                    banks = banks, onlyWrong = true,
+                    gradeSubjects = gradeSubjects, explicitSubjectFilter = hasExplicitSubject
                 )
                 if (sampleWrong == null) {
                     return JSONObject().put("wrongEmpty", true).put("status", st).put("study", store.studySummary())
@@ -971,14 +1213,14 @@ class LearningEngine(
                 val spaced = c.optBoolean("spacedRepetitionEnabled") || focus in listOf("due", "memorize")
                 val spacedWrongOnly = c.optString("spacedScope") == "wrong_only"
                 var deck = when {
-                    focus == "wrong" -> store.pickDeck(deckCount, subjects, allowedLevels, selectedLevel, banks, spaced = spaced, wrongFirst = true, onlyWrong = true)
-                    spaced && spacedWrongOnly -> store.pickDeck(deckCount, subjects, allowedLevels, selectedLevel, banks, spaced = true, missedOnly = true)
+                    focus == "wrong" -> store.pickDeck(deckCount, subjects, allowedLevels, selectedLevel, banks, spaced = spaced, wrongFirst = true, onlyWrong = true, gradeSubjects = gradeSubjects, explicitSubjectFilter = hasExplicitSubject)
+                    spaced && spacedWrongOnly -> store.pickDeck(deckCount, subjects, allowedLevels, selectedLevel, banks, spaced = true, missedOnly = true, gradeSubjects = gradeSubjects, explicitSubjectFilter = hasExplicitSubject)
                         .takeIf { it.length() > 0 }
-                        ?: store.pickDeck(deckCount, subjects, allowedLevels, selectedLevel, banks, spaced = true, coverageFirst = c.optBoolean("coverageFirst"), newFirst = c.optBoolean("newFirst"))
-                    else -> store.pickDeck(deckCount, subjects, allowedLevels, selectedLevel, banks, spaced = spaced, wrongFirst = c.optBoolean("wrongFirst"), coverageFirst = c.optBoolean("coverageFirst"), newFirst = c.optBoolean("newFirst"))
+                        ?: store.pickDeck(deckCount, subjects, allowedLevels, selectedLevel, banks, spaced = true, coverageFirst = c.optBoolean("coverageFirst"), newFirst = c.optBoolean("newFirst"), gradeSubjects = gradeSubjects, explicitSubjectFilter = hasExplicitSubject)
+                    else -> store.pickDeck(deckCount, subjects, allowedLevels, selectedLevel, banks, spaced = spaced, wrongFirst = c.optBoolean("wrongFirst"), coverageFirst = c.optBoolean("coverageFirst"), newFirst = c.optBoolean("newFirst"), gradeSubjects = gradeSubjects, explicitSubjectFilter = hasExplicitSubject)
                 }
                 require(deck.length() > 0) {
-                    if (subjects.isNotEmpty() || allowedLevels.isNotEmpty() || banks.isNotEmpty())
+                    if (subjects.isNotEmpty() || allowedLevels.isNotEmpty() || banks.isNotEmpty() || gradeSubjects.isNotEmpty())
                         "当前答题范围没有题目，请检查题库的科目 / 年级或调整答题范围"
                     else "题库为空，请由家长添加题目"
                 }
@@ -1180,8 +1422,7 @@ class LearningEngine(
         } finally { db.endTransaction(); publishNavigation() }
     }
 
-    private fun normalize(value: String): String = Normalizer.normalize(value.trim(), Normalizer.Form.NFKC)
-        .lowercase(java.util.Locale.ROOT).replace(Regex("\\s+"), " ")
+    private fun normalize(value: String): String = normalizeTextExact(value)
 
     @Synchronized
     fun answer(input: JSONObject, verdict: Boolean? = null, quality: Int? = null): JSONObject {
@@ -1253,9 +1494,9 @@ class LearningEngine(
         }
         fun indices(array: JSONArray): Set<Int> = (0 until array.length()).map { array.getInt(it) }.toSet()
         val correct = if (verdict != null) verdict else if (type == "text") {
-            val value = normalize(input.optString("text"))
+            val rawText = input.optString("text")
             val accepted = question.getJSONArray("answers")
-            value.isNotEmpty() && (0 until accepted.length()).any { normalize(accepted.getString(it)) == value }
+            rawText.isNotBlank() && (0 until accepted.length()).any { matchesTextAnswer(rawText, accepted.getString(it)) }
         } else {
             val selections = input.getJSONArray("selections")
             require(selections.length() > 0 && (0 until selections.length()).all { selections.getInt(it) in 0 until question.getJSONArray("a").length() }) { "请选择有效答案" }
@@ -1280,6 +1521,7 @@ class LearningEngine(
                 put("wrong_progress", wrong)
             }
             if (correct && wasExtra && extraEnabled && number("extra_pool") > 0) put("extra_pool", number("extra_pool") - 1)
+            if (correct) store.popExtraQueue(question.getString("id"))
             if (mode == "streak" && !correct && !wasExtra) round.put("earnedMs", 0)
             if (!wasExtra || mode == "practice") {
                 round.put("answered", round.getInt("answered") + 1)

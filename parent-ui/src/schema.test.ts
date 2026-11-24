@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import {defaults,normalizeRules,normalizeTimePoints,ruleSchema,segments} from './schema.ts';
+import {defaults,normalizeGradeSubjects,normalizeRules,normalizeTimePoints,ruleSchema,segments} from './schema.ts';
 assert.equal(ruleSchema.safeParse({...defaults,allDay:false,windowStart:'',windowEnd:''}).success,false);
 assert.equal(ruleSchema.safeParse({...defaults,allDay:false,windowStart:'18:30',windowEnd:'18:30'}).success,false);
 assert.equal(ruleSchema.safeParse({...defaults,allDay:true,windowStart:'18:30',windowEnd:'18:30'}).success,true);
@@ -93,4 +93,23 @@ assert.equal(normalizedPoints[4].dailyMinutes,45);
 assert.equal(normalizedPoints[5].dailyMinutes,undefined);
 assert.deepEqual(normalizeTimePoints(undefined),[]);
 assert.equal(normalizeRules({timePoints:[{id:'x',name:'数学',days:[0],start:'19:00',end:'20:00',mode:'counted'}]}).timePoints[0].dailyMinutes,60);
+// ST-604：科目与年级主从组合（gradeSubjects）默认值、校验与归一化
+const preGradeSubjects={...defaults} as Record<string,unknown>;
+delete preGradeSubjects.gradeSubjects;
+assert.deepEqual(ruleSchema.parse(preGradeSubjects).gradeSubjects,{});
+assert.deepEqual(
+ ruleSchema.parse({...defaults,gradeSubjects:{'三年级':['英语'],'四年级':['语文','数学','英语'],'五年级':[]}}).gradeSubjects,
+ {'三年级':['英语'],'四年级':['语文','数学','英语'],'五年级':[]}
+);
+assert.equal(ruleSchema.safeParse({...defaults,gradeSubjects:{'三年级':'英语'} as unknown as Record<string,string[]>}).success,false);
+assert.deepEqual(
+ normalizeGradeSubjects({' 三年级 ':[' 英语 ','英语',' ','数学'],'  ':['语文'],'四年级':[],'五年级':null}),
+ {'三年级':['英语','数学'],'四年级':[],'五年级':[]}
+);
+assert.deepEqual(normalizeGradeSubjects(null),{});
+assert.deepEqual(normalizeGradeSubjects(['三年级']),{});
+assert.deepEqual(
+ normalizeRules({gradeSubjects:{'三年级':['英语','英语','']}}).gradeSubjects,
+ {'三年级':['英语']}
+);
 console.log('PASS schedule validation, quotas, rest/review/font bounds, video settings, watch whitelist, question order, study modes and backward-compatible defaults');
