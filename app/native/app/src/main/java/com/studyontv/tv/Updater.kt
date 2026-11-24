@@ -37,6 +37,10 @@ object Updater {
         listOf("蒲公英" to url)
 
     fun check(ctx: Context, forceRefresh: Boolean = false, onResult: (Info?) -> Unit) {
+        if (LocalOnlyGuard.enabled) {
+            onResult(null)
+            return
+        }
         val cachedAt = Prefs.updateCheckedAt(ctx)
         val cached = cachedInfo(ctx)
         if (!forceRefresh && cached != null && System.currentTimeMillis() - cachedAt < CACHE_MS) {
@@ -51,6 +55,7 @@ object Updater {
 
     /** 管理面板“立即检查”：后台执行，面板轮询 status()（不能加锁，否则会等正在进行的检查） */
     fun startCheck(ctx: Context) {
+        if (LocalOnlyGuard.enabled) return
         if (!checkingFlag.compareAndSet(false, true)) return
         Thread { try { checkNow(ctx) } finally { checkingFlag.set(false) } }.apply { isDaemon = true }.start()
     }
@@ -89,7 +94,10 @@ object Updater {
         .put("latest", info.latest).put("current", info.current).put("force", info.force)
         .put("notes", info.notes).put("url", info.url).put("sha256", info.sha256).put("source", info.source)
 
+    internal fun effectiveCachedInfo(cached: Info?, localOnly: Boolean): Info? = if (localOnly) null else cached
+
     fun cachedInfo(ctx: Context): Info? {
+        if (LocalOnlyGuard.enabled) return null
         val raw = Prefs.updateInfo(ctx)
         if (raw.isEmpty()) return null
         return try {
@@ -153,7 +161,7 @@ object Updater {
 
     /** 管理面板用：当前状态 */
     fun status(ctx: Context): JSONObject {
-        val info = cachedInfo(ctx)
+        val info = effectiveCachedInfo(cachedInfo(ctx), LocalOnlyGuard.enabled)
         val log = try { JSONObject(Prefs.updateLog(ctx)) } catch (_: Exception) { JSONObject() }
         return JSONObject().put("current", currentVersion(ctx))
             .put("latest", info?.latest ?: "").put("hasUpdate", newerThanCurrent(ctx, info) != null)

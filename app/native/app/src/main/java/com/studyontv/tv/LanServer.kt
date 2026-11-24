@@ -7,7 +7,9 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.BufferedInputStream
 import java.io.ByteArrayOutputStream
+import java.io.EOFException
 import java.io.File
+import java.io.InputStream
 import java.io.OutputStream
 import java.net.Inet4Address
 import java.net.NetworkInterface
@@ -29,6 +31,41 @@ class LanServer(
         private const val MAX_DEVICE_BODY = 3_000_000
         private const val MAX_PARENT_BODY = 24_000_000
 
+        /** 按 RFC 3986 路径段规则解码 UTF-8 百分号编码（保留字面 `+`，拒绝非法 `%` 序列）。 */
+        internal fun decodePathSegment(raw: String): String {
+            if ('%' !in raw) return raw
+            val out = ByteArrayOutputStream(raw.length)
+            var i = 0
+            while (i < raw.length) {
+                val ch = raw[i]
+                if (ch == '%') {
+                    require(i + 2 < raw.length) { "路径参数编码无效" }
+                    val hi = Character.digit(raw[i + 1], 16)
+                    val lo = Character.digit(raw[i + 2], 16)
+                    require(hi in 0..15 && lo in 0..15) { "路径参数编码无效" }
+                    out.write((hi shl 4) or lo)
+                    i += 3
+                } else {
+                    if (ch.code < 0x80) out.write(ch.code)
+                    else out.write(ch.toString().toByteArray(Charsets.UTF_8))
+                    i++
+                }
+            }
+            return String(out.toByteArray(), Charsets.UTF_8)
+        }
+
+        /** 严格按 Content-Length 读取完整请求体；若客户端中途断连导致 EOF 则抛 EOFException 中止请求。 */
+        internal fun readExactBody(input: InputStream, length: Int): String {
+            val buf = ByteArray(length)
+            var read = 0
+            while (read < length) {
+                val n = input.read(buf, read, length - read)
+                if (n < 0) throw EOFException("请求体未接收完整（已读 $read / $length 字节）")
+                read += n
+            }
+            return String(buf, 0, read, Charsets.UTF_8)
+        }
+
         /**
          * 仅允许本机、沙盒页面或局域网私有地址来源的跨域请求，防止公网恶意网页利用浏览器 Private Network Access 探测电视接口。
          * 只做纯语法校验，绝不对未知域名发起 DNS 解析（防止 DNS Rebinding 与阻塞）。
@@ -36,7 +73,7 @@ class LanServer(
         internal fun allowedCorsOrigin(origin: String?): String? {
             if (origin == null || origin.isBlank()) return "*"
             val trimmed = origin.trim()
-            if (trimmed == "null") return "null"
+            if (trimmed.equals("null", ignoreCase = true)) return null
             val uri = try { URI(trimmed) } catch (_: Exception) { return null }
             val scheme = uri.scheme?.lowercase(Locale.US) ?: return null
             if (scheme != "http" && scheme != "https") return null
@@ -167,12 +204,12 @@ class LanServer(
                 var integration: IntegrationAuth.Scope? = null
                 if (path.startsWith("/api/") && !isPublicApi) {
                     val adminKey = headers["x-admin-key"]
+                    parent = AdminAuth.valid(token) || (adminKey != null && AdminAuth.verify(context, adminKey))
                     val integrationToken = token?.takeIf { it.startsWith("sotv_") }
                     integration = IntegrationAuth.verify(context, integrationToken)
                     if (integration != null && !deviceAccess && !parent && !IntegrationAuth.takeBudget()) {
                         return json(out, 429, err("too_many_requests").put("message", "请求太频繁，请稍后再试"), origin)
                     }
-                    parent = AdminAuth.valid(token) || (adminKey != null && AdminAuth.verify(context, adminKey))
                     if (!deviceAccess && !parent && integration == null) {
                         return json(out, 401, err("unauthorized"), origin)
                     }
@@ -497,7 +534,7 @@ class LanServer(
             json(ctx, 200, JSONObject().put("ok", true).put("deleted", deleted))
         }
         router.prefixDelete("/api/questions/") { ctx ->
-            val id = ctx.path.removePrefix("/api/questions/")
+            val id = decodePathSegment(ctx.path.removePrefix("/api/questions/"))
             val deleted = DeviceRuntime.learning.deleteQuestions(listOf(id))
             GateService.refreshNow()
             json(ctx, 200, JSONObject().put("ok", deleted > 0))
@@ -578,12 +615,16 @@ class LanServer(
             reply(ctx.out, 200, "application/zip", Diag.export(context), mapOf("Content-Disposition" to "attachment; filename=\"studyontv-logs-$stamp.zip\""), ctx.headers["origin"])
         }
         router.get("/api/device") { ctx ->
+            val clock = store.clockReading()
             json(ctx, 200, JSONObject().put("name", Prefs.deviceName(context))
-                .put("version", BuildConfig.VERSION_NAME).put("flavor", BuildConfig.FLAVOR).put("ip", localIp() ?: "").put("port", boundPort)
+                .put("version", BuildConfig.VERSION_NAME).put("flavor", BuildConfig.FLAVOR).put("localOnly", LocalOnlyGuard.enabled).put("ip", localIp() ?: "").put("port", boundPort)
                 .put("uninstallProtected", UninstallGuard.active(context)).put("deviceOwner", UninstallGuard.owner(context))
                 .put("launcherHidden", LauncherIcon.hidden(context)).put("desktop", DesktopMode.state(context)).put("autostart", Watchdog.report(context)).put("monitor", GateService.diagnostics(context))
-                .put("timezone", DeviceClock.describe(store)).put("deviceTime", DeviceClock.calendar(store).time.toString())
-                .put("keepalive", KeepAlive.report(context)).put("buglyConsent", Prefs.buglyConsent(context))
+                // 家长在别的时区时，面板要能看出「设备现在几点」到底按哪个时区算
+                .put("timezone", DeviceClock.describe(store, clock.millis))
+                .put("deviceTime", DeviceClock.calendar(store, clock.millis).time.toString())
+                .put("clockSource", clock.source.id)
+                .put("keepalive", KeepAlive.report(context)).put("buglyConsent", !LocalOnlyGuard.enabled && Prefs.buglyConsent(context))
                 .put("crashUpload", crashUploadState(context)))
         }
         router.put("/api/device/crash") { ctx ->
@@ -598,9 +639,14 @@ class LanServer(
             json(ctx, 200, JSONObject().put("ok", true).put("crashUpload", crashUploadState(context)))
         }
         router.put("/api/device/bugly") { ctx ->
-            val enabled = JSONObject(ctx.body).optBoolean("enabled")
-            if (enabled) BuglyInit.initWithConsent(context) else BuglyInit.revoke(context)
-            json(ctx, 200, JSONObject().put("ok", true).put("buglyConsent", Prefs.buglyConsent(context)))
+            if (LocalOnlyGuard.enabled) {
+                BuglyInit.revoke(context)
+                json(ctx, 200, JSONObject().put("ok", true).put("buglyConsent", false).put("localOnly", true))
+            } else {
+                val enabled = JSONObject(ctx.body).optBoolean("enabled")
+                if (enabled) BuglyInit.initWithConsent(context) else BuglyInit.revoke(context)
+                json(ctx, 200, JSONObject().put("ok", true).put("buglyConsent", Prefs.buglyConsent(context)))
+            }
         }
         router.delete("/api/device/uninstall-guard") { ctx ->
             try {
@@ -648,12 +694,12 @@ class LanServer(
             json(ctx, 200, JSONObject().put("items", items))
         }
         router.prefixGet("/api/reviews/") { ctx ->
-            val id = ctx.path.removePrefix("/api/reviews/").substringBefore('/')
+            val id = decodePathSegment(ctx.path.removePrefix("/api/reviews/").substringBefore('/'))
             val review = store.review(id) ?: return@prefixGet json(ctx, 404, err("not_found"))
             json(ctx, 200, review)
         }
         router.prefixPost("/api/reviews/") { ctx ->
-            val id = ctx.path.removePrefix("/api/reviews/").substringBefore('/')
+            val id = decodePathSegment(ctx.path.removePrefix("/api/reviews/").substringBefore('/'))
             if (ctx.path.endsWith("/retry")) {
                 require(store.review(id) != null) { "题目不存在" }
                 GradingService.enqueue(store, DeviceRuntime.learning, id)
@@ -854,16 +900,7 @@ class LanServer(
         }
     }
 
-    private fun readBody(input: BufferedInputStream, length: Int): String {
-        val buf = ByteArray(length)
-        var read = 0
-        while (read < length) {
-            val n = input.read(buf, read, length - read)
-            if (n <= 0) break
-            read += n
-        }
-        return String(buf, 0, read, Charsets.UTF_8)
-    }
+    private fun readBody(input: BufferedInputStream, length: Int): String = readExactBody(input, length)
 
     fun localIp(): String? = try {
         val lanIp = try {

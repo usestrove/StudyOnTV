@@ -1,4 +1,4 @@
-import {Component,useEffect,useState,lazy,Suspense,type ErrorInfo,type ReactNode} from 'react';
+import {Component,useEffect,useRef,useState,lazy,Suspense,type ErrorInfo,type ReactNode} from 'react';
 import {root} from './react-root';
 import {QueryClient,QueryClientProvider,useQuery} from '@tanstack/react-query';
 import {AlertCircle,LoaderCircle,BookOpen,ClipboardCheck,SlidersHorizontal,ChartColumn,Leaf,LogOut,ArrowRight,LockKeyhole,Monitor,Settings,Sun,Moon,Laptop,ChevronsUpDown,Tv,Palette,KeyRound,CloudDownload,RadioTower,FileText,Bot,Eye,EyeOff,House,ShieldCheck,Users,Search,Volume2,X,RefreshCw} from 'lucide-react';
@@ -109,11 +109,12 @@ const searchEntries:SearchEntry[]=[
  {id:'grading',page:'grading',where:'作答批改',title:'待批改与 AI 批改',keywords:'批改 作业 待批 评分 ai 主观题 手写'},
  {id:'records',page:'records',where:'学情与记录',title:'学情诊断、顽固错题与记忆成熟度',keywords:'学情 记录 成长 统计 进度 正确率 时长 趋势 薄弱项 错题榜'},
 ];
-const searchHits=(query:string)=>{
+const searchHits=(query:string,localOnly=false)=>{
  const q=query.trim().toLowerCase();
  if(!q)return [];
  const words=q.split(/\s+/).filter(Boolean);
  return searchEntries
+  .filter(entry=>!localOnly||entry.section!=='update')
   .map(entry=>{
    const text=(entry.title+' '+entry.keywords+' '+entry.where).toLowerCase();
    return {entry,score:words.every(w=>text.includes(w))?words.filter(w=>entry.title.toLowerCase().includes(w)).length:0,ok:text.includes(q)||words.every(w=>text.includes(w))};
@@ -154,8 +155,8 @@ function App(){const[session,setSession]=useState(()=>restoreSession()?1:0),[nex
 
 function Login({onLogin,theme}:{onLogin:()=>void,theme:ReturnType<typeof useTheme>}){
  const[host,updateHost]=useState(getHost()),[secret,setSecret]=useState(''),[busy,setBusy]=useState(false),[error,setError]=useState('');
- const[visible,setVisible]=useState(false),[accepted,setAccepted]=useState(true),[crashReports,setCrashReports]=useState(true),[docType,setDocType]=useState<'terms'|'privacy'|null>(null);
- async function submit(e:any){e.preventDefault();if(busy)return;setError('');if(!accepted)return setError('请先同意使用说明和隐私条款');if(secret.length<6)return setError('请输入管理密码');setBusy(true);try{setHost(host);const result=await api('/api/auth','POST',{passphrase:secret,remember:true});setToken(result.token);saveSession(getHost(),result.token);api('/api/device/crash','PUT',{consent:crashReports}).catch(()=>{});setSecret('');onLogin();}catch(e:any){setError(e.message==='Failed to fetch'?'无法连接设备，请检查设备地址和 WiFi':e.message);}finally{setBusy(false);}}
+ const[visible,setVisible]=useState(false),[accepted,setAccepted]=useState(true),[crashReports,setCrashReports]=useState(false),[crashTouched,setCrashTouched]=useState(false),[docType,setDocType]=useState<'terms'|'privacy'|null>(null);
+ async function submit(e:any){e.preventDefault();if(busy)return;setError('');if(!accepted)return setError('请先同意使用说明和隐私条款');if(!secret)return setError('请输入管理密码');if(secret.length<6)return setError('管理密码至少 6 位');setBusy(true);try{setHost(host);const result=await api('/api/auth','POST',{passphrase:secret,remember:true});setToken(result.token);saveSession(getHost(),result.token);if(crashTouched&&!result?.localOnly){const deviceInfo=await api('/api/device').catch(()=>null);if(!deviceInfo?.localOnly){await api('/api/device/crash','PUT',{consent:crashReports}).catch(()=>{});}}setSecret('');onLogin();}catch(e:any){setError(e.message==='Failed to fetch'?'无法连接设备，请检查设备地址和 WiFi':e.message);}finally{setBusy(false);}}
  return <main className="relative min-h-svh overflow-hidden bg-background">
   <div aria-hidden className="pointer-events-none absolute inset-0 bg-[linear-gradient(to_right,color-mix(in_oklab,var(--border)_45%,transparent)_1px,transparent_1px),linear-gradient(to_bottom,color-mix(in_oklab,var(--border)_45%,transparent)_1px,transparent_1px)] bg-[size:56px_56px] [mask-image:linear-gradient(to_bottom,black,transparent_78%)]"/>
   <header className="relative z-10 mx-auto flex h-16 w-full max-w-6xl items-center justify-between px-4 md:px-6"><div className="flex items-center gap-2 text-sm font-semibold"><span className="brand-icon size-8"><Leaf className="size-4"/></span><span>题了个题</span></div><ThemeSwitch {...theme}/></header>
@@ -170,6 +171,7 @@ function Login({onLogin,theme}:{onLogin:()=>void,theme:ReturnType<typeof useThem
    <Card className="w-full border-border bg-card shadow-sm" aria-labelledby="login-title">
     <CardHeader className="gap-1.5 px-5 pb-4 pt-5">
      <CardTitle id="login-title" className="text-2xl tracking-tight">登录家长管理</CardTitle>
+     <p className="text-xs leading-5 text-muted-foreground">在电视或手机端打开「题了个题 → 家长设置」查看设备地址与管理密码</p>
     </CardHeader>
     <CardContent className="px-5 pb-5">
      <form onSubmit={submit} className="flex flex-col gap-4">
@@ -197,7 +199,7 @@ function Login({onLogin,theme}:{onLogin:()=>void,theme:ReturnType<typeof useThem
          </FieldContent>
         </Field>
         <Field orientation="horizontal" className="items-start gap-3">
-         <Checkbox id="crash-reports" className="mt-0.5" checked={crashReports} onCheckedChange={value=>setCrashReports(value===true)}/>
+         <Checkbox id="crash-reports" className="mt-0.5" checked={crashReports} onCheckedChange={value=>{setCrashReports(value===true);setCrashTouched(true);}}/>
          <FieldContent><FieldLabel htmlFor="crash-reports" className="font-normal text-muted-foreground">参与软件体验提升计划</FieldLabel></FieldContent>
         </Field>
        </FieldGroup>
@@ -225,7 +227,7 @@ function Login({onLogin,theme}:{onLogin:()=>void,theme:ReturnType<typeof useThem
         <>
          <p>1. <strong>数据留存本地</strong>：孩子档案、题库配图、答题记录、手写作答与时间规则均保存在您的电视/平板本地 SQLite 数据库中，仅通过家庭局域网供家长面板访问，无中心化账号服务器。</p>
          <p>2. <strong>第三方服务按需调用</strong>：仅当家长主动配置并启用 AI 出题/批改模型或云端语音朗读时，相关题目或作答内容才会直接发送至您所选的服务商接口；API Key 仅保存在您的设备本地。</p>
-         <p>3. <strong>崩溃日志默认关闭</strong>：仅在您主动勾选同意并配置上报地址后，应用崩溃时才会发送脱敏堆栈与机型版本，随时可在「设置 → 设备」中关闭。</p>
+         <p>3. <strong>软件体验提升计划</strong>：勾选「参与软件体验提升计划」后，应用在发生异常时仅发送不含个人信息的脱敏故障诊断与设备型号版本，帮助优化设备兼容性与使用体验；您可随时在「设置 → 设备」中关闭。</p>
         </>
        )}
       </div>
@@ -255,18 +257,20 @@ function Header({title,children}:{title:string,children:ReactNode}){
 
 function BottomNav({page,go,pending}:{page:PageId,go:(p:PageId)=>void,pending:number}){return <nav className="bottom-nav" aria-label="主导航">{pages.map(p=><Button key={p.id} type="button" variant="ghost" aria-current={page===p.id?'page':undefined} onClick={()=>go(p.id)}><p.icon/><span>{p.short}</span>{p.id==='grading'&&pending>0&&<Badge className="badge" variant="destructive">{pending>99?'99+':pending}</Badge>}</Button>)}</nav>;}
 
-function SettingsPage({section,go,sessionId,state,logout}:{section:SectionId,go:(p:PageId,s:SectionId)=>void,sessionId:number,state:any,logout:()=>void}){
- return <Tabs value={section} orientation="vertical" onValueChange={value=>go('settings',value as SectionId)} className="gap-4 lg:grid lg:grid-cols-[14rem_minmax(0,1fr)] lg:items-start lg:gap-6">
-  <TabsList aria-label="设置分区" className="sticky top-10 z-20 -mx-4 flex w-[calc(100%+2rem)] flex-wrap justify-start gap-1 bg-background/95 px-3 py-2 backdrop-blur max-[520px]:gap-0.5 lg:static lg:mx-0 lg:block lg:w-full lg:space-y-1 lg:bg-transparent lg:px-0 lg:py-0 lg:backdrop-blur-none">
-   {sections.map(s=><TabsTrigger key={s.id} value={s.id} className="shrink-0 justify-start gap-2 px-3 max-[520px]:px-1.5 max-[520px]:text-xs max-[520px]:[&_svg]:hidden lg:flex lg:w-full lg:justify-start"><s.icon/>{s.title}</TabsTrigger>)}
+function SettingsPage({section,go,sessionId,state,logout,localOnly}:{section:SectionId,go:(p:PageId,s:SectionId)=>void,sessionId:number,state:any,logout:()=>void,localOnly:boolean}){
+ const visibleSections=localOnly?sections.filter(s=>s.id!=='update'):sections;
+ const activeSection:SectionId=localOnly&&section==='update'?'device':section;
+ return <Tabs value={activeSection} orientation="vertical" onValueChange={value=>go('settings',value as SectionId)} className="gap-4 lg:grid lg:grid-cols-[14rem_minmax(0,1fr)] lg:items-start lg:gap-6">
+  <TabsList aria-label="设置分区" className="sticky top-10 z-20 -mx-4 flex w-[calc(100%+2rem)] flex-nowrap justify-start gap-1 overflow-x-auto bg-background/95 px-3 py-2 backdrop-blur lg:static lg:mx-0 lg:block lg:w-full lg:space-y-1 lg:overflow-visible lg:bg-transparent lg:px-0 lg:py-0 lg:backdrop-blur-none">
+   {visibleSections.map(s=><TabsTrigger key={s.id} value={s.id} className="shrink-0 whitespace-nowrap justify-start gap-2 px-3 max-[520px]:px-2.5 max-[520px]:text-xs lg:flex lg:w-full lg:justify-start"><s.icon/>{s.title}</TabsTrigger>)}
   </TabsList>
-  <TabsContent value={section} className="m-0 w-full min-w-0">{section==='children'?<ChildrenPanel sessionId={sessionId}/>:section==='speech'?<SpeechSettings sessionId={sessionId}/>:section==='keepalive'?<KeepAlivePanel sessionId={sessionId}/>:section==='display'?<FeedbackPanel state={state} sessionId={sessionId}/>:section==='logs'?<LogsPage sessionId={sessionId}/>:section==='ai'?<AiSettings sessionId={sessionId}/>:<DevicePanel sessionId={sessionId} only={section} onPasswordChanged={logout} onOpenKeepAlive={()=>go('settings','keepalive')}/>}</TabsContent>
+  <TabsContent value={activeSection} className="m-0 w-full min-w-0">{activeSection==='children'?<ChildrenPanel sessionId={sessionId}/>:activeSection==='speech'?<SpeechSettings sessionId={sessionId}/>:activeSection==='keepalive'?<KeepAlivePanel sessionId={sessionId}/>:activeSection==='display'?<FeedbackPanel state={state} sessionId={sessionId}/>:activeSection==='logs'?<LogsPage sessionId={sessionId}/>:activeSection==='ai'?<AiSettings sessionId={sessionId}/>:<DevicePanel sessionId={sessionId} only={activeSection} onPasswordChanged={logout} onOpenKeepAlive={()=>go('settings','keepalive')}/>}</TabsContent>
  </Tabs>;}
 
 /** 面板全局搜索：设置分区、其它页面和常用功能都在里面，选中后跳过去并按需滚动到具体设置项 */
-function GlobalSearch({go}:{go:(p:PageId,s?:SectionId)=>void}){
+function GlobalSearch({go,localOnly}:{go:(p:PageId,s?:SectionId)=>void,localOnly:boolean}){
  const[open,setOpen]=useState(false),[query,setQuery]=useState('');
- const hits=searchHits(query);
+ const hits=searchHits(query,localOnly);
  const jump=(entry:SearchEntry)=>{
   setOpen(false);setQuery('');
   go(entry.page,entry.section);
@@ -300,8 +304,30 @@ function Dashboard({sessionId,logout,theme}:{sessionId:number,logout:()=>void,th
  const reviews=useQuery({queryKey:['reviews',sessionId],queryFn:()=>api('/api/reviews'),refetchInterval:15000});
  const pending=reviews.data?.items?.length||0;
  const connected=!state.error;
- // 打开家长后台时自动检查一次版本；有新版本才提示
- useEffect(()=>{let stop=false;let tries=0;api('/api/update/check','POST',{}).catch(()=>{});const timer=setInterval(async()=>{tries++;try{const u=await api('/api/update');if(stop)return;if(!u.checking){clearInterval(timer);if(u.hasUpdate&&u.latest)toast.message(`发现新版本 v${u.latest}，请升级`);}}catch{}if(tries>=20)clearInterval(timer);},2500);return()=>{stop=true;clearInterval(timer);};},[]);
+ const localOnly=!!device.data?.localOnly;
+ const updateChecked=useRef(false);
+ // 打开家长后台时自动检查一次版本；纯本地版跳过，有新版本才提示
+ useEffect(()=>{
+  if(!device.data||device.data.localOnly||updateChecked.current)return;
+  updateChecked.current=true;
+  let stop=false;let tries=0;
+  api('/api/update/check','POST',{}).catch(()=>{});
+  const timer=setInterval(async()=>{
+   tries++;
+   try{
+    const u=await api('/api/update');
+    if(stop)return;
+    if(!u.checking){
+     clearInterval(timer);
+     if(u.hasUpdate&&u.latest){
+      toast.message(`发现新版本 v${u.latest}，请升级`,{action:{label:'去更新',onClick:()=>go('settings','update')}});
+     }
+    }
+   }catch{}
+   if(tries>=20)clearInterval(timer);
+  },2500);
+  return()=>{stop=true;clearInterval(timer);};
+ },[device.data?.localOnly,!!device.data]);
  const current=pages.find(p=>p.id===page)!;
  return <SidebarProvider>
   {!isMobile&&<AppSidebar page={page} go={go} pending={pending} device={device.data} logout={logout}/>}
@@ -318,7 +344,7 @@ function Dashboard({sessionId,logout,theme}:{sessionId:number,logout:()=>void,th
      <span className={`me-1.5 size-1.5 rounded-full ${connected?'bg-emerald-500':'bg-amber-500'}`}/>
      {connected?'已连接':'连接中断'}
     </Badge>
-    <GlobalSearch go={go}/><ThemeSwitch {...theme}/><div className="md:hidden"><DeviceMenu device={device.data} logout={logout}><Button variant="ghost" size="icon" aria-label="设备与连接"><Tv/></Button></DeviceMenu></div>
+    <GlobalSearch go={go} localOnly={localOnly}/><ThemeSwitch {...theme}/><div className="md:hidden"><DeviceMenu device={device.data} logout={logout}><Button variant="ghost" size="icon" aria-label="设备与连接"><Tv/></Button></DeviceMenu></div>
    </Header>
    <main className="page-content px-4 pt-4 md:px-6 md:pt-5 w-full max-w-6xl mx-auto">
     <div className={page==='remote'?'hidden':'mb-4 flex items-end justify-between gap-4 border-b pb-4'}><h1 className="text-2xl font-semibold tracking-tight">{current.title}</h1><p className="hidden shrink-0 text-xs text-muted-foreground sm:block">{current.description}</p></div>
@@ -331,7 +357,7 @@ function Dashboard({sessionId,logout,theme}:{sessionId:number,logout:()=>void,th
       {page==='grading'&&<GradingPage sessionId={sessionId}/>}
       {page==='records'&&<RecordsPage sessionId={sessionId}/>}
      </Suspense>
-     {page==='settings'&&<SettingsPage section={section} go={go} sessionId={sessionId} state={state.data} logout={logout}/>}
+     {page==='settings'&&<SettingsPage section={section} go={go} sessionId={sessionId} state={state.data} logout={logout} localOnly={localOnly}/>}
     </ErrorBoundary>
    </main>
   </SidebarInset>

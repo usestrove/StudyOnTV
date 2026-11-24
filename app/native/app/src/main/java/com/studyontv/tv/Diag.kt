@@ -10,6 +10,7 @@ import java.net.URL
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 
@@ -43,16 +44,29 @@ object Diag {
         if (throwable != null) write("E", tag, throwable.stackTraceToString().take(8000))
     }
 
-    private fun rotate(context: Context) {
-        val current = File(dir(context), FILE)
-        if (!current.exists() || current.length() < MAX_BYTES) return
-        for (i in KEEP - 1 downTo 1) {
-            val from = File(dir(context), if (i == 1) FILE else "$FILE.$i")
-            val to = File(dir(context), "$FILE.${i + 1}")
-            if (from.exists()) { to.delete(); from.renameTo(to) }
+    internal fun rotateInDir(logDir: File, maxBytes: Long = MAX_BYTES, keep: Int = KEEP) {
+        val current = File(logDir, FILE)
+        if (!current.exists() || current.length() < maxBytes) return
+        if (keep <= 0) {
+            current.delete()
+            return
         }
-        current.renameTo(File(dir(context), "$FILE.1"))
+        val oldest = File(logDir, "$FILE.$keep")
+        if (oldest.exists()) oldest.delete()
+        for (i in keep - 1 downTo 1) {
+            val from = File(logDir, "$FILE.$i")
+            val to = File(logDir, "$FILE.${i + 1}")
+            if (from.exists()) {
+                if (to.exists()) to.delete()
+                from.renameTo(to)
+            }
+        }
+        val firstArchive = File(logDir, "$FILE.1")
+        if (firstArchive.exists()) firstArchive.delete()
+        current.renameTo(firstArchive)
     }
+
+    private fun rotate(context: Context) = rotateInDir(dir(context))
 
     fun read(context: Context, limit: Int = 500, query: String = ""): JSONArray {
         val lines = ArrayList<String>()
@@ -104,7 +118,8 @@ object Diag {
     // -------------------------------------------------------------------------
 
     private const val RUNTIME_UPLOAD_INTERVAL_MS = 6L * 60 * 60 * 1000L
-    @Volatile private var runtimeUploading = false
+    private val runtimeUploading = AtomicBoolean(false)
+    private val crashUploading = AtomicBoolean(false)
 
     internal fun isAliyunOssEndpoint(endpoint: String): Boolean {
         val host = try { URL(endpoint).host.lowercase(Locale.US) } catch (_: Exception) { return false }
@@ -190,6 +205,36 @@ object Diag {
         }
     }
 
+    internal fun runPendingCrashUpload(
+        readAndClear: () -> String,
+        writePending: (String) -> Unit,
+        buildZip: (String) -> ByteArray,
+        upload: (ByteArray) -> Int,
+        onSuccess: (Int, Int) -> Unit = { _, _ -> },
+        onFailure: (String) -> Unit = {}
+    ): Boolean {
+        var summary: String? = null
+        return try {
+            summary = readAndClear()
+            val zipBytes = buildZip(summary)
+            val code = upload(zipBytes)
+            if (code in 200..299) {
+                onSuccess(zipBytes.size, code)
+                true
+            } else {
+                writePending(summary)
+                onFailure("upload failed: HTTP $code — writing back pending for retry")
+                false
+            }
+        } catch (e: Exception) {
+            if (summary != null) {
+                try { writePending(summary) } catch (_: Exception) { }
+            }
+            onFailure("upload error: ${e.javaClass.simpleName}: ${e.message} — writing back pending for retry")
+            false
+        }
+    }
+
     /**
      * 在 App 启动时调用（DeviceRuntime.ensure() 里）。
      * 若存在待上传的崩溃标记且用户已参与体验提升计划，则在后台线程上传崩溃 ZIP。
@@ -199,20 +244,21 @@ object Diag {
         if (!Prefs.crashUploadConsent(context)) return
         if (endpoint.isBlank()) return
         if (!CrashDetector.hasPending(context)) return
+        if (!crashUploading.compareAndSet(false, true)) return
 
+        val app = context.applicationContext
         val thread = Thread {
             try {
-                val summary = CrashDetector.readAndClear(context)
-                val zipBytes = buildCrashZip(context, summary)
-                val code = uploadZip(endpoint, token, zipBytes, "crash")
-                if (code in 200..299) {
-                    info("Crash", "upload ok (${zipBytes.size} bytes, HTTP $code)")
-                } else {
-                    warn("Crash", "upload failed: HTTP $code — writing back pending for retry")
-                    CrashDetector.writePending(context, summary)
-                }
-            } catch (e: Exception) {
-                warn("Crash", "upload error: ${e.javaClass.simpleName}: ${e.message}")
+                runPendingCrashUpload(
+                    readAndClear = { CrashDetector.readAndClear(app) },
+                    writePending = { CrashDetector.writePending(app, it) },
+                    buildZip = { buildCrashZip(app, it) },
+                    upload = { uploadZip(endpoint, token, it, "crash") },
+                    onSuccess = { size, code -> info("Crash", "upload ok ($size bytes, HTTP $code)") },
+                    onFailure = { msg -> warn("Crash", msg) }
+                )
+            } finally {
+                crashUploading.set(false)
             }
         }
         thread.name = "crash-upload"
@@ -230,8 +276,7 @@ object Diag {
         if (endpoint.isBlank()) return
         val now = System.currentTimeMillis()
         if (!force && now - Prefs.lastTelemetryUploadAt(context) < RUNTIME_UPLOAD_INTERVAL_MS) return
-        if (runtimeUploading) return
-        runtimeUploading = true
+        if (!runtimeUploading.compareAndSet(false, true)) return
         val app = context.applicationContext
         val token = Prefs.crashToken(app)
         val thread = Thread {
@@ -247,7 +292,7 @@ object Diag {
             } catch (e: Exception) {
                 warn("Telemetry", "runtime log upload error: ${e.javaClass.simpleName}: ${e.message}")
             } finally {
-                runtimeUploading = false
+                runtimeUploading.set(false)
             }
         }
         thread.name = "runtime-log-upload"

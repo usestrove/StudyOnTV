@@ -38,11 +38,23 @@ html:not(.tv-device) .fb-answer, html:not(.tv-device) .fb-tip { font-size: calc(
   -webkit-flex-direction: column; flex-direction: column;
   -webkit-justify-content: center; justify-content: center;
 }
-/* 电视上学习中心内容可能超过可视高度；退出按钮不能跟在卡片下面被 flex 收缩挤到卡片上。 */
-html.tv-device .hub-wrap { position: relative; }
+/* 电视上学习中心内容可能超过可视高度；取消垂直居中与绝对定位，让退出按钮稳稳排在卡片下方、不与右上角 #hubChildren 或卡片重叠，超出由 #stage 滚动。 */
+html.tv-device #screen-hub { height: auto; min-height: 100%; }
+html.tv-device .hub-wrap {
+  height: auto; min-height: 100%;
+  -webkit-justify-content: flex-start; justify-content: flex-start;
+  padding: 1rem 0 2.4rem;
+}
+html.tv-device .hub-top,
+html.tv-device .hub-heading,
+html.tv-device .hub-grid,
 html.tv-device .hub-foot {
-  position: absolute; top: 0; right: 0; z-index: 5;
-  margin: 0;
+  -webkit-flex-shrink: 0; flex-shrink: 0;
+}
+html.tv-device .hub-foot {
+  position: static;
+  margin-top: 1.2rem;
+  -webkit-justify-content: flex-end; justify-content: flex-end;
 }
 .hub-top {
   display: -webkit-flex; display: flex;

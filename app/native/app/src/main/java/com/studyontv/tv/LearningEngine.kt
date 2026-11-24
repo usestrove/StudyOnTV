@@ -44,9 +44,138 @@ object TimePointsMath {
     }
 }
 
-class LearningEngine(private val store: LocalStore) {
+class LearningEngine(
+    private val store: LocalStore,
+    private val usageDayStart: () -> Long = store::startOfToday
+) {
     companion object {
         private val SECRET_QUESTION_FIELDS = listOf("k", "answers", "correctIndices", "tip", "modelAnswer", "rubric")
+
+        /** 闪卡自评的纯状态机计划：在写库前统一完成轮次匹配、卡组归属与同轮幂等去重校验。 */
+        internal data class FlashcardRatePlan(
+            val quality: Int,
+            val correct: Boolean,
+            val alreadyRated: Boolean,
+            val finished: Boolean,
+            val updatedRatedIds: List<String>,
+            val updatedCorrectIds: List<String>,
+            val deckSize: Int
+        )
+
+        internal fun planFlashcardRate(round: JSONObject?, roundId: String, qid: String, quality: Int): FlashcardRatePlan {
+            val q = quality.coerceIn(1, 5)
+            val correct = q >= 3
+            if (roundId.isNotEmpty()) {
+                require(round != null && round.optString("id") == roundId) { "任务已更新，请重新加载" }
+            }
+            if (round == null) {
+                return FlashcardRatePlan(q, correct, alreadyRated = false, finished = false, emptyList(), emptyList(), 0)
+            }
+            val deck = round.optJSONArray("studyDeck")
+            val deckIds = LinkedHashSet<String>()
+            if (deck != null) {
+                for (i in 0 until deck.length()) {
+                    val id = deck.optJSONObject(i)?.optString("id").orEmpty()
+                    if (id.isNotEmpty()) deckIds.add(id)
+                }
+            }
+            if (deckIds.isNotEmpty()) {
+                require(qid in deckIds) { "该题目不在当前闪卡轮次中" }
+            }
+            val ratedArr = round.optJSONArray("ratedIds") ?: JSONArray()
+            val ratedSet = LinkedHashSet<String>()
+            for (i in 0 until ratedArr.length()) {
+                val id = ratedArr.optString(i)
+                if (id.isNotEmpty()) ratedSet.add(id)
+            }
+            val correctArr = round.optJSONArray("ratedCorrectIds") ?: JSONArray()
+            val correctSet = LinkedHashSet<String>()
+            for (i in 0 until correctArr.length()) {
+                val id = correctArr.optString(i)
+                if (id.isNotEmpty()) correctSet.add(id)
+            }
+            if (qid in ratedSet) {
+                return FlashcardRatePlan(q, correct, alreadyRated = true, finished = false, ratedSet.toList(), correctSet.toList(), deckIds.size)
+            }
+            ratedSet.add(qid)
+            if (correct) correctSet.add(qid) else correctSet.remove(qid)
+            val finished = round.optString("focus") == "memorize" && deckIds.isNotEmpty() && ratedSet.containsAll(deckIds)
+            return FlashcardRatePlan(q, correct, alreadyRated = false, finished = finished, ratedSet.toList(), correctSet.toList(), deckIds.size)
+        }
+
+        /** 本轮主阶段是否已达标（nextQuestion 与 answer 的唯一真理源）。 */
+        internal fun isBaseDone(round: JSONObject): Boolean {
+            val target = round.optInt("target")
+            return when (round.optString("mode")) {
+                "streak" -> round.optInt("streak") >= target
+                "count" -> round.optInt("correct") >= target
+                else -> round.optInt("answered") >= target
+            }
+        }
+
+        /** 是否处于自主学习/非管控轮次（纯刷题模式、自由时段或主动发起的学习）。 */
+        internal fun isVoluntary(round: JSONObject, supervisionEnabled: Boolean): Boolean =
+            round.optBoolean("voluntary") || !supervisionEnabled
+
+        /** 当前轮次是否启用错题加练机制。 */
+        internal fun isExtraEnabled(round: JSONObject, supervisionEnabled: Boolean): Boolean {
+            if (isVoluntary(round, supervisionEnabled)) return false
+            if (round.optString("mode") == "count") return false
+            return round.optJSONObject("rules")?.optBoolean("extraEnabled", true) ?: true
+        }
+
+        /** 当前是否应进入错题加练出题阶段（统一约束 extraEnabled、extraPool 与 baseDone）。 */
+        internal fun isExtraStage(round: JSONObject, extraPool: Long, supervisionEnabled: Boolean): Boolean {
+            if (!isExtraEnabled(round, supervisionEnabled) || extraPool <= 0L) return false
+            return round.optString("mode") == "practice" || isBaseDone(round)
+        }
+
+        /** 当前是否存在可用观看额度（答题赚取额度 或 每日/开机免费额度）。 */
+        internal fun hasUsableWatchQuota(remainingMs: Long, freeQuotaMs: Long): Boolean =
+            (remainingMs / 1000L) > 0L || (freeQuotaMs / 1000L) > 0L
+
+        /** 统一 canExit 判定：非管控模式、或无阻断原因且处于自由放行/拥有可用观看额度（含免费额度）。 */
+        internal fun computeCanExit(
+            supervision: Boolean,
+            reason: String,
+            remainingMs: Long,
+            freeQuotaMs: Long,
+            free: Boolean
+        ): Boolean = !supervision || (reason.isEmpty() && (free || hasUsableWatchQuota(remainingMs, freeQuotaMs)))
+
+        /** 在 9 天窗口内查找下一个开放半小时槽；若周计划全禁（无任何 '1'）返回 0L，避免误报当前时刻或明日零点。 */
+        internal fun findNextAvailableSlotMillis(
+            slots: List<String>,
+            nowMs: Long,
+            tomorrow: Boolean,
+            timeZone: java.util.TimeZone,
+            dayIndexOf: (Calendar) -> Int
+        ): Long {
+            val base = Calendar.getInstance(timeZone).apply {
+                timeInMillis = nowMs
+                if (tomorrow) {
+                    add(Calendar.DAY_OF_YEAR, 1)
+                    set(Calendar.HOUR_OF_DAY, 0); set(Calendar.MINUTE, 0)
+                }
+                set(Calendar.SECOND, 0); set(Calendar.MILLISECOND, 0)
+            }
+            for (offset in 0..8) {
+                val day = (base.clone() as Calendar).apply {
+                    add(Calendar.DAY_OF_YEAR, offset)
+                    set(Calendar.HOUR_OF_DAY, 0); set(Calendar.MINUTE, 0); set(Calendar.SECOND, 0); set(Calendar.MILLISECOND, 0)
+                }
+                val index = dayIndexOf(day)
+                val daySlots = slots.getOrNull(index) ?: continue
+                for (slot in 0 until minOf(48, daySlots.length)) {
+                    if (daySlots[slot] != '1') continue
+                    val candidate = (day.clone() as Calendar).apply {
+                        set(Calendar.HOUR_OF_DAY, slot / 2); set(Calendar.MINUTE, (slot % 2) * 30)
+                    }.timeInMillis
+                    if (candidate > nowMs) return candidate
+                }
+            }
+            return 0L
+        }
 
         /** 把题目正确答案格式化成闪卡背面可直接阅读的答案文本。 */
         internal fun formatAnswerDisplay(question: JSONObject): String = when (val type = question.optString("type", "single")) {
@@ -84,8 +213,9 @@ class LearningEngine(private val store: LocalStore) {
         private set
     private fun number(key: String) = store.get(key, "0").toLongOrNull() ?: 0L
     private fun put(key: String, value: Long) = store.set(key, value.toString())
-    private val time = TimePolicy(store) { bootCount() }
+    private val time = TimePolicy(store, wallTime = { store.clockReading().millis }) { bootCount() }
     private val videos = VideoLessons(store)
+    private var lastLoggedRollbackDay: Long? = null
 
     /** Cache publication must not turn a committed operation into a reported failure. */
     private fun publishNavigation() {
@@ -123,7 +253,7 @@ class LearningEngine(private val store: LocalStore) {
         )
     }
 
-    /** 测试可以固定时钟（例如验证跨午夜窗口）；生产环境始终是系统时间。 */
+    /** 测试可以固定时钟（例如验证跨午夜窗口）；生产环境统一由 DeviceClock 取时。 */
     internal var now: () -> Calendar = { DeviceClock.calendar(store) }
 
     /** 一个命中的网课时段或大人豁免窗口。 */
@@ -177,19 +307,37 @@ class LearningEngine(private val store: LocalStore) {
     @Synchronized fun awake(awake: Boolean) { day(); time.awake(store.config(), awake); publishNavigation() }
 
     private fun day() {
-        val current = store.startOfToday()
-        if (number("usage_day") != current) {
-            if (pendingUsageMs > 0) { store.logEvent("usage", JSONObject().put("milliseconds", pendingUsageMs)); pendingUsageMs = 0 }
-            put("usage_day", current)
-            put("credit_ms", 0)
-            put("used_ms", 0)
-            put("cap_adjust_ms", 0)
-            store.set("video_lesson", "")
-            if (time.left("rest_deadline") == 0L) put("rest_watched_ms", 0)
-            val freeMin = store.config().optLong("dailyFreeMinutes", 0L)
-            put("free_quota_ms", freeMin * 60000L)
-            put("free_used_ms", 0)
+        val db = store.writableDatabase
+        // 结算在开启事务前确定用量日期，事务中的 status() 不能重新日切。
+        if (db.inTransaction()) return
+        val current = usageDayStart()
+        val previousUsageDay = store.get("usage_day").toLongOrNull()
+        // 部分设备冷启动会先使用出厂日期，校时后才恢复。回拨时保留原来的用量日期和余额。
+        if (previousUsageDay != null && current < previousUsageDay && lastLoggedRollbackDay != previousUsageDay) {
+            lastLoggedRollbackDay = previousUsageDay
+            Diag.warn("Day", "检测到日期回拨，保留记账日和额度 previous=$previousUsageDay current=$current")
+        }
+        if (previousUsageDay == null || current > previousUsageDay) {
+            db.beginTransaction()
+            try {
+                if (pendingUsageMs > 0) store.logEvent("usage", JSONObject().put("milliseconds", pendingUsageMs))
+                put("usage_day", current)
+                put("credit_ms", 0)
+                put("used_ms", 0)
+                put("cap_adjust_ms", 0)
+                store.set("video_lesson", "")
+                if (time.left("rest_deadline") == 0L) put("rest_watched_ms", 0)
+                val freeMin = store.config().optLong("dailyFreeMinutes", 0L)
+                put("free_quota_ms", freeMin * 60000L)
+                put("free_used_ms", 0)
+                db.setTransactionSuccessful()
+            } finally {
+                db.endTransaction()
+            }
+            pendingUsageMs = 0
         } else if (store.get("free_used_ms").isEmpty()) {
+            // 旧版本升级：没有 free_used_ms，用当天已用时长估算已消耗的免费额度。
+            // 免费额度总是先于奖励余额扣除，所以这个估算不会把奖励时间算成免费时间。
             val daily = store.config().optLong("dailyFreeMinutes", 0L) * 60000L
             put("free_used_ms", min(number("used_ms"), daily).coerceAtLeast(0))
         }
@@ -278,29 +426,16 @@ class LearningEngine(private val store: LocalStore) {
     private fun nextAvailable(config: JSONObject, tomorrow: Boolean): Long {
         val currentCal = now()
         val nowMs = currentCal.timeInMillis
-        val base = currentCal.clone() as Calendar
-        if (tomorrow) {
-            base.add(Calendar.DAY_OF_YEAR, 1)
-            base.set(Calendar.HOUR_OF_DAY, 0); base.set(Calendar.MINUTE, 0)
+        val base = (currentCal.clone() as Calendar).apply {
+            if (tomorrow) {
+                add(Calendar.DAY_OF_YEAR, 1)
+                set(Calendar.HOUR_OF_DAY, 0); set(Calendar.MINUTE, 0)
+            }
+            set(Calendar.SECOND, 0); set(Calendar.MILLISECOND, 0)
         }
-        base.set(Calendar.SECOND, 0); base.set(Calendar.MILLISECOND, 0)
         if (config.optBoolean("allDay")) return base.timeInMillis
         val slots = weekSlots(config) ?: return base.timeInMillis
-        for (offset in 0..8) {
-            val day = (base.clone() as Calendar).apply {
-                add(Calendar.DAY_OF_YEAR, offset)
-                set(Calendar.HOUR_OF_DAY, 0); set(Calendar.MINUTE, 0); set(Calendar.SECOND, 0); set(Calendar.MILLISECOND, 0)
-            }
-            val index = dayIndex(config, day)
-            for (slot in 0 until 48) {
-                if (slots[index][slot] != '1') continue
-                val candidate = (day.clone() as Calendar).apply {
-                    set(Calendar.HOUR_OF_DAY, slot / 2); set(Calendar.MINUTE, (slot % 2) * 30)
-                }.timeInMillis
-                if (candidate > nowMs) return candidate
-            }
-        }
-        return base.timeInMillis
+        return findNextAvailableSlotMillis(slots, nowMs, tomorrow, currentCal.timeZone) { dayIndex(config, it) }
     }
 
     private fun scheduleFree(c: JSONObject): Boolean =
@@ -366,11 +501,13 @@ class LearningEngine(private val store: LocalStore) {
     @Synchronized
     fun status(): JSONObject {
         day()
+        val inTransaction = store.writableDatabase.inTransaction()
         val c = store.config()
         val supervision = c.optBoolean("supervisionEnabled", true)
         val remaining = usableCredit(c)
         val used = number("used_ms")
-        val rounds = store.roundsDoneToday()
+        val settledUsageDay = if (inTransaction) store.get("usage_day").toLongOrNull() else null
+        val rounds = if (settledUsageDay == null) store.roundsDoneToday() else store.roundsDoneToday(settledUsageDay)
         val o = if (supervision) override() else null
         val point = if (supervision) activeWindow(c) else null
         val limit = if (point?.mode == "counted") JSONObject(c.toString()).put("dailyMinutes", point.dailyMinutes) else c
@@ -394,7 +531,8 @@ class LearningEngine(private val store: LocalStore) {
         }
         val nextAt = if (reason == "locked") o?.optLong("until") ?: 0L
             else if (reason in listOf("quota", "rounds", "schedule")) nextAvailable(c, reason != "schedule") else 0L
-        val canExit = !supervision || (reason.isEmpty() && (remaining / 1000 > 0 || free))
+        // 每日免费、开机免费和奖励额度都可以放行返回键和 Home 键。
+        val canExit = computeCanExit(supervision, reason, remaining, freeQuota, free)
         val result = JSONObject().put("remainingSeconds", remaining / 1000).put("usedMinutes", used / 60000.0)
             .put("supervisionEnabled", supervision)
             .put("quizGeneration", number("quiz_generation"))
@@ -408,7 +546,8 @@ class LearningEngine(private val store: LocalStore) {
             .put("activePoint", point?.let { JSONObject().put("name", it.name).put("mode", it.mode).put("until", it.until) } ?: JSONObject.NULL)
             .put("canExit", canExit)
             .put("scheduleText", scheduleText(c))
-        if (!store.writableDatabase.inTransaction())
+        // A result computed inside a transaction must not expose an uncommitted reward/unlock.
+        if (!inTransaction)
             exitSnapshot = LearningExitSnapshot(canExit, android.os.SystemClock.elapsedRealtime())
         return result
     }
@@ -580,6 +719,20 @@ class LearningEngine(private val store: LocalStore) {
         return updated
     }
 
+    /** 后台自动题库同步等外部路径删除题目后，原子修复可能受影响的进行中轮次并递增代次。 */
+    @Synchronized
+    fun onExternalQuestionsRemoved(ids: Set<String>): Boolean {
+        if (ids.isEmpty()) return false
+        val db = store.writableDatabase
+        val repaired: Boolean
+        db.beginTransaction()
+        try {
+            repaired = repairActiveRound(ids, false)
+            db.setTransactionSuccessful()
+        } finally { db.endTransaction(); publishNavigation() }
+        return repaired
+    }
+
     private fun scopeValues(config: JSONObject, key: String): List<String> {
         val array = config.optJSONArray(key) ?: return emptyList()
         return (0 until array.length()).map { array.optString(it) }.filter { it.isNotEmpty() }
@@ -608,10 +761,8 @@ class LearningEngine(private val store: LocalStore) {
         val coverageFirst = config.optBoolean("coverageFirst")
         val newFirst = config.optBoolean("newFirst")
 
-        val extraEnabled = round.optJSONObject("rules")?.optBoolean("extraEnabled", true) ?: true
-        val extraStage = if (round.optString("mode") == "count") false
-        else if (round.optString("mode") == "practice") number("extra_pool") > 0
-        else extraEnabled && round.optInt("answered") >= round.getInt("target")
+        val supervisionEnabled = config.optBoolean("supervisionEnabled", true)
+        val extraStage = isExtraStage(round, number("extra_pool"), supervisionEnabled)
 
         // 「先背再测」进入小测阶段后，按刚背过的卡组逐题考查；只有触发错题加练后才回到题库随机补题
         val deck = round.optJSONArray("studyDeck")
@@ -702,8 +853,11 @@ class LearningEngine(private val store: LocalStore) {
     }
 
     @Synchronized
-    fun start(level: String? = null): JSONObject =
-        start(JSONObject().apply { if (level != null) put("level", level) })
+    fun start(level: String? = null, fromGate: Boolean = false): JSONObject =
+        start(JSONObject().apply {
+            if (level != null) put("level", level)
+            if (fromGate) put("fromGate", true)
+        })
 
     @Synchronized
     fun start(options: JSONObject): JSONObject {
@@ -738,11 +892,6 @@ class LearningEngine(private val store: LocalStore) {
         if (supervision && !explicitStudy && st.optBoolean("free") && c.getString("playMode") != "practice") {
             return JSONObject().put("free", true).put("status", st).put("study", store.studySummary())
         }
-        var round = active()
-        healPendingReview(round)
-        if (!explicitStudy && round == null && supervision && videos.wanted(c)) {
-            return JSONObject().put("videoLesson", videos.start(c)).put("status", st)
-        }
         val feedbackId = store.get("review_feedback")
         val feedback = feedbackId.takeIf { it.isNotEmpty() }?.let { store.review(it) }
         if (feedback?.optString("state") == "graded") return JSONObject().put("reviewed", true).put("status", st)
@@ -751,8 +900,14 @@ class LearningEngine(private val store: LocalStore) {
         if (supervision && !explicitStudy && c.getString("playMode") != "practice" && st.getString("reason") in listOf("quota", "rounds", "schedule")) {
             return JSONObject().put("blocked", st.getString("reason")).put("status", st)
         }
-        if (supervision && !explicitStudy && st.optLong("remainingSeconds") > 0 && c.getString("playMode") != "practice") {
+        val hasWatchQuota = st.optLong("remainingSeconds") > 0L || st.optLong("freeQuotaSeconds") > 0L
+        if (supervision && !explicitStudy && hasWatchQuota && c.getString("playMode") != "practice") {
             return JSONObject().put("watching", true).put("status", st).put("study", store.studySummary())
+        }
+        var round = active()
+        healPendingReview(round)
+        if (!explicitStudy && round == null && supervision && videos.wanted(c)) {
+            return JSONObject().put("videoLesson", videos.start(c)).put("status", st)
         }
         if (round?.has("pendingReview") == true) {
             return JSONObject().put("pending", true).put("reviewId", round.getString("pendingReview")).put("status", st)
@@ -769,7 +924,7 @@ class LearningEngine(private val store: LocalStore) {
             if (changed) round = null
         }
 
-        val voluntary = !supervision || st.optBoolean("free") || st.optLong("remainingSeconds") > 0 ||
+        val voluntary = !supervision || st.optBoolean("free") || hasWatchQuota ||
             st.getString("reason") in listOf("quota", "rounds", "schedule")
         val desiredMode = if (voluntary && c.getString("playMode") == "practice" && !wantMemorizeFirst && focus.isEmpty()) "practice"
             else if (voluntary && focus.isNotEmpty()) "round"
@@ -870,42 +1025,39 @@ class LearningEngine(private val store: LocalStore) {
     @Synchronized
     fun rateFlashcard(roundId: String, qid: String, quality: Int): JSONObject {
         require(qid.isNotBlank() && store.questionExists(qid)) { "题目不存在" }
-        val q = quality.coerceIn(1, 5)
-        val correct = q >= 3
+        val round = active()
+        val plan = planFlashcardRate(round, roundId, qid, quality)
+        if (plan.alreadyRated) {
+            return JSONObject()
+                .put("ok", true)
+                .put("alreadyRated", true)
+                .put("finished", false)
+                .put("intervals", store.previewIntervals(qid))
+                .put("status", status())
+                .put("study", store.studySummary())
+        }
         val db = store.writableDatabase
         db.beginTransaction()
         try {
-            store.recordProgress(qid, q)
-            store.answered(qid, correct)
-            store.logEvent("flashcard", JSONObject().put("qid", qid).put("quality", q).put("correct", correct))
+            store.recordProgress(qid, plan.quality)
+            store.answered(qid, plan.correct)
+            store.logEvent("flashcard", JSONObject().put("qid", qid).put("quality", plan.quality).put("correct", plan.correct))
 
-            val round = active()
-            if (round != null && (roundId.isEmpty() || round.optString("id") == roundId)) {
-                val ratedArr = round.optJSONArray("ratedIds") ?: JSONArray()
-                val ratedSet = LinkedHashSet((0 until ratedArr.length()).map { ratedArr.optString(it) })
-                ratedSet.add(qid)
-                round.put("ratedIds", JSONArray(ratedSet.toList()))
+            if (round != null) {
+                round.put("ratedIds", JSONArray(plan.updatedRatedIds))
+                round.put("ratedCorrectIds", JSONArray(plan.updatedCorrectIds))
 
-                val correctArr = round.optJSONArray("ratedCorrectIds") ?: JSONArray()
-                val correctSet = LinkedHashSet((0 until correctArr.length()).map { correctArr.optString(it) })
-                if (correct) correctSet.add(qid) else correctSet.remove(qid)
-                round.put("ratedCorrectIds", JSONArray(correctSet.toList()))
-
-                if (round.optString("focus") == "memorize") {
-                    val deck = round.optJSONArray("studyDeck") ?: JSONArray()
-                    val deckIds = (0 until deck.length()).map { deck.getJSONObject(it).getString("id") }.toSet()
-                    if (deckIds.isNotEmpty() && ratedSet.containsAll(deckIds)) {
-                        store.logEvent("quiz", JSONObject().put("native", true).put("memorize", true)
-                            .put("total", deckIds.size).put("correct", correctSet.size).put("passed", true))
-                        store.set("active_round", "")
-                        db.setTransactionSuccessful()
-                        return JSONObject()
-                            .put("ok", true)
-                            .put("finished", true)
-                            .put("intervals", store.previewIntervals(qid))
-                            .put("status", status())
-                            .put("study", store.studySummary())
-                    }
+                if (plan.finished) {
+                    store.logEvent("quiz", JSONObject().put("native", true).put("memorize", true)
+                        .put("total", plan.deckSize).put("correct", plan.updatedCorrectIds.size).put("passed", true))
+                    store.set("active_round", "")
+                    db.setTransactionSuccessful()
+                    return JSONObject()
+                        .put("ok", true)
+                        .put("finished", true)
+                        .put("intervals", store.previewIntervals(qid))
+                        .put("status", status())
+                        .put("study", store.studySummary())
                 }
                 store.set("active_round", round.toString())
             }
@@ -960,8 +1112,9 @@ class LearningEngine(private val store: LocalStore) {
             if (grant > 0) put("credit_ms", number("credit_ms") + grant)
             store.logEvent("quiz", JSONObject().put("native", true).put("video", true).put("total", 0).put("correct", 0).put("passed", true))
             if (supervision) store.logEvent("quiz_pass", JSONObject().put("roundId", id).put("minutes", grant / 60000.0).put("video", true))
+            val result = JSONObject().put("rewardMinutes", grant / 60000.0).put("status", status())
             db.setTransactionSuccessful()
-            return JSONObject().put("rewardMinutes", grant / 60000.0).put("status", status())
+            return result
         } finally { db.endTransaction(); publishNavigation() }
     }
 
@@ -985,7 +1138,7 @@ class LearningEngine(private val store: LocalStore) {
         val id = round.optString("pendingReview")
         if (id.isEmpty()) return JSONObject().put("pending", false).put("status", status())
         store.review(id)?.let {
-            it.put("state", "skipped").put("feedback", "孩子选择先跳过，等待家长处理").put("skippedAt", System.currentTimeMillis())
+            it.put("state", "skipped").put("feedback", "孩子选择先跳过，等待家长处理").put("skippedAt", store.clockReading().millis)
             store.saveReview(it)
         }
         round.remove("pendingReview")
@@ -1006,6 +1159,8 @@ class LearningEngine(private val store: LocalStore) {
         require(store.childExists(reviewChild)) { "该题目所属的孩子档案已删除" }
         val settings = JSONObject(store.get("grading_settings", "{}"))
         val threshold = settings.optDouble("passScore", 60.0)
+        if (reviewChild != store.activeChild()) flushUsage()
+        store.withChild(reviewChild) { day() }
         val db = store.writableDatabase
         db.beginTransaction()
         try {
@@ -1015,7 +1170,7 @@ class LearningEngine(private val store: LocalStore) {
                 val result = answer(review.getJSONObject("input"), score >= threshold, quality)
                 require(!result.has("error") && !result.has("blocked")) { "当前任务暂不可结算，请在可用时段重试" }
                 review.put("state", "graded").put("score", score).put("feedback", feedback.take(5000))
-                    .put("source", source).put("gradedAt", System.currentTimeMillis()).put("result", result)
+                    .put("source", source).put("gradedAt", store.clockReading().millis).put("result", result)
                 store.saveReview(review)
                 store.set("review_feedback", reviewId)
                 store.logEvent("review_graded", JSONObject().put("id", reviewId).put("score", score).put("source", source))
@@ -1052,7 +1207,8 @@ class LearningEngine(private val store: LocalStore) {
         }
         require(input.getString("roundId") == round.getString("id") && input.getString("nonce") == round.getString("nonce")) { "题目已更新，请重新加载" }
         val st = status()
-        val voluntary = round.optBoolean("voluntary") || !store.config().optBoolean("supervisionEnabled", true)
+        val supervisionEnabled = store.config().optBoolean("supervisionEnabled", true)
+        val voluntary = isVoluntary(round, supervisionEnabled)
         if (verdict == null && !voluntary && round.getString("mode") != "practice" &&
             st.getString("reason") in listOf("schedule", "quota", "rounds", "rest", "feedback", "locked")) {
             return JSONObject().put("blocked", st.getString("reason"))
@@ -1076,7 +1232,7 @@ class LearningEngine(private val store: LocalStore) {
                 if (savedDrawing.isEmpty()) remove("drawing") else put("drawing", savedDrawing)
             }
             val id = UUID.randomUUID().toString()
-            val review = JSONObject().put("id", id).put("state", "pending").put("ts", System.currentTimeMillis())
+            val review = JSONObject().put("id", id).put("state", "pending").put("ts", store.clockReading().millis)
                 .put("child", store.activeChild())
                 .put("question", question).put("input", cleanInput).put("feedback", "等待批改")
             val db = store.writableDatabase
@@ -1112,7 +1268,8 @@ class LearningEngine(private val store: LocalStore) {
             val rules = round.getJSONObject("rules")
             val wasExtra = round.optBoolean("extra")
             val mode = round.getString("mode")
-            if (!correct && !voluntary && mode != "count" && rules.optBoolean("extraEnabled")) {
+            val extraEnabled = isExtraEnabled(round, supervisionEnabled)
+            if (!correct && extraEnabled) {
                 var wrong = number("wrong_progress") + 1
                 if (wrong >= rules.getInt("wrongThreshold")) {
                     val extra = rules.getLong("extraQuestions")
@@ -1122,7 +1279,7 @@ class LearningEngine(private val store: LocalStore) {
                 }
                 put("wrong_progress", wrong)
             }
-            if (correct && wasExtra && number("extra_pool") > 0) put("extra_pool", number("extra_pool") - 1)
+            if (correct && wasExtra && extraEnabled && number("extra_pool") > 0) put("extra_pool", number("extra_pool") - 1)
             if (mode == "streak" && !correct && !wasExtra) round.put("earnedMs", 0)
             if (!wasExtra || mode == "practice") {
                 round.put("answered", round.getInt("answered") + 1)
@@ -1137,13 +1294,8 @@ class LearningEngine(private val store: LocalStore) {
             store.answered(question.getString("id"), correct)
             store.logEvent("answer", JSONObject().put("qid", question.getString("id")).put("correct", correct)
                 .put("difficulty", question.optInt("difficulty", 2)).put("extra", wasExtra).put("mode", mode))
-            val baseDone = when (mode) {
-                "streak" -> round.getInt("streak") >= round.getInt("target")
-                "count" -> round.getInt("correct") >= round.getInt("target")
-                else -> round.getInt("answered") >= round.getInt("target")
-            }
+            val baseDone = isBaseDone(round)
             val passed = mode in listOf("streak", "count") || round.getInt("correct") >= ceil(round.getInt("target") * rules.getDouble("passRatio")).toInt()
-            val extraEnabled = !voluntary && mode != "count" && rules.optBoolean("extraEnabled", true)
             val finished = mode != "practice" && baseDone && (!passed || !extraEnabled || number("extra_pool") == 0L)
             val answerText = when (type) {
                 "text" -> question.optJSONArray("answers")?.optString(0).orEmpty()
@@ -1171,7 +1323,6 @@ class LearningEngine(private val store: LocalStore) {
                 store.set("active_round", "")
                 result.put("rewardMinutes", grant / 60000.0)
             } else {
-                if (mode == "streak" && !baseDone) round.put("extra", false)
                 var aborted = false
                 if (mode == "count" && !correct) {
                     round.put("nonce", UUID.randomUUID().toString())
@@ -1187,8 +1338,6 @@ class LearningEngine(private val store: LocalStore) {
                     }
                 }
                 if (!aborted) {
-                    if (mode == "streak" && !baseDone) round.put("extra", false)
-                    if (mode == "practice") round.put("extra", number("extra_pool") > 0)
                     store.set("active_round", round.toString())
                     result.put("next", publicRound(round))
                 }

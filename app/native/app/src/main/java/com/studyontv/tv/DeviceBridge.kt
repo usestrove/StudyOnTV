@@ -153,6 +153,8 @@ open class DeviceBridge(protected val activity: Activity, private val connection
      */
     @JavascriptInterface
     fun resumePrevious() {
+        val status = DeviceRuntime.learning.status()
+        if (!status.optBoolean("canExit")) return
         // 不检查 connectionAllowed：和学习页 / GateActivity 共用同一个桥，
         // 管控页里 connectionAllowed 是 false，检查了会导致解锁后无法还原画面。
         // 这个调用只会收起管控页并恢复自己记下的受控应用，不暴露任何设备信息。
@@ -161,10 +163,10 @@ open class DeviceBridge(protected val activity: Activity, private val connection
             val target = GateService.rememberedActive()
             if (activity is GateActivity) activity.finish() else activity.moveTaskToBack(true)
             if (target == null || target == activity.packageName || Foreground.isLauncher(target)) return@runOnUiThread
-            val decor = activity.window?.decorView ?: return@runOnUiThread
-            decor.postDelayed({
-                val now = try { Foreground.current(activity) } catch (_: Exception) { null }
-                if (now == null || now == activity.packageName || Foreground.isLauncher(now)) launchPackage(target)
+            val appContext = activity.applicationContext
+            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                val now = try { Foreground.current(appContext) } catch (_: Exception) { null }
+                if (now == null || now == appContext.packageName || Foreground.isLauncher(now)) launchPackage(appContext, target)
             }, 700)
         }
     }
@@ -201,6 +203,10 @@ open class DeviceBridge(protected val activity: Activity, private val connection
 
     @JavascriptInterface
     fun readInLanguage(text: String, language: String) = SpeechReader.read(activity, text, language, ::speechNotice)
+
+    /** 听力题：按题指定语速朗读（listenRate），rate 传 -1 表示跟随朗读设置里的全局语速 */
+    @JavascriptInterface
+    fun readWithRate(text: String, language: String, rate: Double) = SpeechReader.read(activity, text, language, ::speechNotice, rate)
 
     @JavascriptInterface
     fun stopReading() = SpeechReader.stop()

@@ -115,4 +115,44 @@ class EdgeTtsTest {
         assertNull(EdgeTts.parseHttpDate(""))
         assertNull(EdgeTts.parseHttpDate("not-a-date"))
     }
+
+    @Test
+    fun escapeXmlStripsIllegalControlCharsAndLoneSurrogatesWhilePreservingValidEmoji() {
+        val loneHigh = '\uD83D'
+        val loneLow = '\uDC00'
+        val raw = "A\u0000B\u000BC\u000CD\t\n\r${loneHigh}E${loneLow}F📐𝜋<x>&y"
+        assertEquals("ABCD\t\n\rEF📐𝜋&lt;x&gt;&amp;y", EdgeTts.escapeXml(raw))
+    }
+
+    @Test(expected = IllegalStateException::class)
+    fun requireOnlineAllowedRejectsLocalOnlyMode() {
+        EdgeTts.requireOnlineAllowed(localOnly = true)
+    }
+
+    @Test
+    fun handshakeValidatesStatusCodeAndSecWebSocketAccept() {
+        // RFC 6455 §1.3 official test vector
+        val wsKey = "dGhlIHNhbXBsZSBub25jZQ=="
+        val expected = "s3pPLMBiTxaQ9kYGzzhZRbK+xOo="
+        assertEquals(expected, EdgeTts.expectedAccept(wsKey))
+        assertEquals(101, EdgeTts.parseHttpStatusCode("HTTP/1.1 101 Switching Protocols"))
+        assertEquals(403, EdgeTts.parseHttpStatusCode("HTTP/1.1 403 Forbidden"))
+        assertNull(EdgeTts.parseHttpStatusCode("GARBAGE 101"))
+
+        // Valid 101 + matching Sec-WebSocket-Accept passes
+        EdgeTts.validateHandshakeResponse(
+            "HTTP/1.1 101 Switching Protocols",
+            mapOf("sec-websocket-accept" to expected),
+            wsKey
+        )
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun handshakeRejectsMismatchedSecWebSocketAccept() {
+        EdgeTts.validateHandshakeResponse(
+            "HTTP/1.1 101 Switching Protocols",
+            mapOf("sec-websocket-accept" to "wrong-accept"),
+            "dGhlIHNhbXBsZSBub25jZQ=="
+        )
+    }
 }

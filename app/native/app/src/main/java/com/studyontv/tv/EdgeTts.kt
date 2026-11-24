@@ -60,7 +60,12 @@ object EdgeTts {
 
     private class Handshake403Exception(message: String, val serverMillis: Long?) : IllegalStateException(message)
 
+    internal fun requireOnlineAllowed(localOnly: Boolean = LocalOnlyGuard.enabled) {
+        if (localOnly) throw IllegalStateException("仅本地隐私版（EU Local-Only）已禁用 Edge 在线语音")
+    }
+
     fun synthesize(text: String, voice: String, language: String = "", rate: Double = 1.0): ByteArray {
+        requireOnlineAllowed()
         val chosenVoice = voice.trim().ifEmpty { defaultVoice(language) }
         val pct = (((rate.coerceIn(0.7, 1.5)) - 1.0) * 100.0).toInt()
         val rateStr = if (pct >= 0) "+${pct}%" else "${pct}%"
@@ -86,7 +91,15 @@ object EdgeTts {
             val sslFactory = SSLSocketFactory.getDefault() as SSLSocketFactory
             return (sslFactory.createSocket(raw, HOST, PORT, true) as SSLSocket).apply {
                 soTimeout = 15_000
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.N) {
+                    sslParameters = sslParameters.apply {
+                        endpointIdentificationAlgorithm = "HTTPS"
+                    }
+                }
                 startHandshake()
+                if (!javax.net.ssl.HttpsURLConnection.getDefaultHostnameVerifier().verify(HOST, session)) {
+                    throw javax.net.ssl.SSLPeerUnverifiedException("Hostname $HOST not verified")
+                }
             }
         } catch (e: Throwable) {
             try { raw.close() } catch (_: Exception) { }
@@ -198,6 +211,28 @@ object EdgeTts {
         return null
     }
 
+    private val HTTP_STATUS_LINE_RE = Regex("^HTTP/\\d+\\.\\d+\\s+(\\d{3})(?:\\s.*)?$")
+    private const val WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+
+    internal fun parseHttpStatusCode(statusLine: String): Int? =
+        HTTP_STATUS_LINE_RE.matchEntire(statusLine.trim())?.groupValues?.get(1)?.toIntOrNull()
+
+    internal fun expectedAccept(wsKey: String): String {
+        val digest = java.security.MessageDigest.getInstance("SHA-1")
+            .digest((wsKey + WS_GUID).toByteArray(Charsets.US_ASCII))
+        return MediaStore.encodeBase64(digest)
+    }
+
+    internal fun validateHandshakeResponse(statusLine: String, headers: Map<String, String>, wsKey: String) {
+        val code = parseHttpStatusCode(statusLine)
+        if (code == 403) {
+            throw Handshake403Exception("Edge 语音握手失败：$statusLine", parseHttpDate(headers["date"]))
+        }
+        require(code == 101) { "Edge 语音握手失败：$statusLine" }
+        val accept = headers["sec-websocket-accept"].orEmpty().trim()
+        require(accept == expectedAccept(wsKey)) { "Edge 语音握手校验失败（Sec-WebSocket-Accept 不匹配）" }
+    }
+
     private fun handshake(input: BufferedInputStream, out: OutputStream, path: String, muid: String) {
         val keyBytes = ByteArray(16).also { SecureRandom().nextBytes(it) }
         val wsKey = MediaStore.encodeBase64(keyBytes)
@@ -225,10 +260,7 @@ object EdgeTts {
             val colon = line.indexOf(':')
             if (colon > 0) headers[line.substring(0, colon).trim().lowercase(Locale.US)] = line.substring(colon + 1).trim()
         }
-        if (statusLine.contains("403")) {
-            throw Handshake403Exception("Edge 语音握手失败：$statusLine", parseHttpDate(headers["date"]))
-        }
-        require(statusLine.contains("101")) { "Edge 语音握手失败：$statusLine" }
+        validateHandshakeResponse(statusLine, headers, wsKey)
     }
 
     private fun readHttpLine(input: BufferedInputStream): String {
@@ -377,10 +409,45 @@ object EdgeTts {
     private fun randomHex(bytes: Int): String =
         ByteArray(bytes).also { SecureRandom().nextBytes(it) }.joinToString("") { "%02X".format(Locale.US, it) }
 
-    internal fun escapeXml(s: String): String = s
-        .replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-        .replace("\"", "&quot;")
-        .replace("'", "&apos;")
+    /**
+     * 按 XML 1.0 §2.2 净化并转义 SSML 文本：
+     * - 剥离非法控制字符（保留 \t、\n、\r）与 0xFFFE/0xFFFF；
+     * - 完整保留合法 UTF-16 代理对，丢弃孤立高/低代理字符；
+     * - 转义 XML 特殊字符 & < > " '。
+     */
+    internal fun escapeXml(s: String): String {
+        val out = StringBuilder(s.length)
+        var i = 0
+        while (i < s.length) {
+            val ch = s[i]
+            if (Character.isHighSurrogate(ch)) {
+                if (i + 1 < s.length && Character.isLowSurrogate(s[i + 1])) {
+                    out.append(ch).append(s[i + 1])
+                    i += 2
+                } else {
+                    i++
+                }
+                continue
+            }
+            if (Character.isLowSurrogate(ch)) {
+                i++
+                continue
+            }
+            val code = ch.code
+            val xmlValid = ch == '\t' || ch == '\n' || ch == '\r' ||
+                (code in 0x20..0xD7FF) || (code in 0xE000..0xFFFD)
+            if (xmlValid) {
+                when (ch) {
+                    '&' -> out.append("&amp;")
+                    '<' -> out.append("&lt;")
+                    '>' -> out.append("&gt;")
+                    '"' -> out.append("&quot;")
+                    '\'' -> out.append("&apos;")
+                    else -> out.append(ch)
+                }
+            }
+            i++
+        }
+        return out.toString()
+    }
 }

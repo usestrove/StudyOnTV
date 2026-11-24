@@ -42,11 +42,16 @@ object Foreground {
     @Volatile private var cachedImePackages: Set<String> = emptySet()
     @Volatile private var cachedImeAt = 0L
 
+    internal fun isInputMethodName(pkg: String?): Boolean {
+        if (pkg.isNullOrEmpty()) return false
+        val lower = pkg.lowercase(java.util.Locale.US)
+        return lower.contains("inputmethod") || lower.contains("keyboard") || lower.contains("secime") || lower.contains("input_")
+    }
+
     /** 识别系统已启用输入法及常见厂商安全键盘（如 com.huawei.secime、com.baidu.input_huawei），避免输密码弹键盘时触发误拦截 */
     fun isInputMethod(context: Context, pkg: String?): Boolean {
         if (pkg.isNullOrEmpty()) return false
-        val lower = pkg.lowercase(java.util.Locale.US)
-        if (lower.contains("inputmethod") || lower.contains("keyboard") || lower.contains("secime") || lower.contains("input_")) return true
+        if (isInputMethodName(pkg)) return true
         val now = SystemClock.elapsedRealtime()
         if (cachedImeAt == 0L || now - cachedImeAt > 60_000L) {
             cachedImePackages = try {
@@ -106,7 +111,11 @@ object Foreground {
 
     /** 最近一个真正的前台应用（不含系统临时窗口），供「解锁后回到原画面」使用 */
     fun lastReal(): String? = lastRealPackage?.takeUnless { it == selfPackage || (it == lastPackage && isTransient(it)) }
-    fun hasResumedActivity(): Boolean = ownActivity?.get() != null
+    fun hasResumedActivity(): Boolean {
+        val activity = ownActivity?.get() ?: return false
+        if (Build.VERSION.SDK_INT >= 24 && activity.isInMultiWindowMode) return false
+        return true
+    }
     fun resumedActivity(): android.app.Activity? = ownActivity?.get()
     fun learningActivity(): android.app.Activity? = ownActivity?.get()?.takeIf { it is MainActivity }
 
@@ -209,13 +218,14 @@ object Foreground {
                 return sticky
             }
             // 没有可用事件（例如刚开机还没有新事件）时，退到最近真的用过的应用；
-            // 只接受 STALE_MS 内用过的，避免把早已退出的应用当成当前前台（#93）。
+            // 只接受 STALE_MS 内用过的，避免把早已退出的应用当成当前前台（#93），同时过滤输入法避免污染 usageLatest（ST-104）。
             val recent = try {
-                manager.queryUsageStats(UsageStatsManager.INTERVAL_DAILY, now - 86400000, now)
-                    ?.filter {
-                        it.lastTimeUsed > 0 && now - it.lastTimeUsed <= STALE_MS &&
-                            !isTransient(it.packageName) && it.packageName != context.packageName
-                    }?.maxByOrNull { it.lastTimeUsed }
+                val stats = manager.queryUsageStats(UsageStatsManager.INTERVAL_DAILY, now - 86400000, now)
+                    ?.mapNotNull { stat ->
+                        val pkg = stat.packageName
+                        if (pkg.isNullOrEmpty()) null else UsageCandidate(pkg, stat.lastTimeUsed)
+                    }.orEmpty()
+                pickRecentUsage(stats, now, context.packageName) { isInputMethod(context, it) }
             } catch (_: Exception) { null }
             if (recent == null) return null
             usageLatest = recent.packageName
@@ -225,6 +235,25 @@ object Foreground {
             return recent.packageName
         } catch (_: Exception) { null }
     }
+
+    internal data class UsageCandidate(val packageName: String, val lastTimeUsed: Long)
+
+    internal fun pickRecentUsage(
+        candidates: Iterable<UsageCandidate>,
+        now: Long,
+        selfPackage: String,
+        isInputMethodPkg: (String) -> Boolean
+    ): UsageCandidate? = candidates
+        .asSequence()
+        .filter {
+            it.lastTimeUsed > 0L &&
+                now - it.lastTimeUsed <= STALE_MS &&
+                it.packageName.isNotEmpty() &&
+                it.packageName != selfPackage &&
+                !isTransient(it.packageName) &&
+                !isInputMethodPkg(it.packageName)
+        }
+        .maxByOrNull { it.lastTimeUsed }
 
     @Volatile private var usageQueriedAt = 0L
     @Volatile private var usageLatest: String? = null

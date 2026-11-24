@@ -74,6 +74,61 @@ class WavAudioTest {
         assertEquals(50L, parsed.frames)
     }
 
+    private fun buildExtensibleWav(fmtBodySize: Int, subFormat: ByteArray?, pcmBytes: ByteArray): ByteArray {
+        val out = ByteArrayOutputStream()
+        out.write("RIFF".toByteArray(Charsets.US_ASCII))
+        le32(out, -1)
+        out.write("WAVE".toByteArray(Charsets.US_ASCII))
+        out.write("fmt ".toByteArray(Charsets.US_ASCII))
+        le32(out, fmtBodySize)
+        le16(out, 0xFFFE) // WAVE_FORMAT_EXTENSIBLE
+        le16(out, 1) // mono
+        le32(out, 24000)
+        le32(out, 48000)
+        le16(out, 2)
+        le16(out, 16)
+        if (fmtBodySize >= 40) {
+            le16(out, 22) // cbSize
+            le16(out, 16) // wValidBitsPerSample
+            le32(out, 4)  // dwChannelMask (FRONT_CENTER)
+            out.write(subFormat ?: ByteArray(16))
+            if (fmtBodySize > 40) out.write(ByteArray(fmtBodySize - 40))
+        } else if (fmtBodySize > 16) {
+            out.write(ByteArray(fmtBodySize - 16))
+        }
+        out.write("data".toByteArray(Charsets.US_ASCII))
+        le32(out, pcmBytes.size)
+        out.write(pcmBytes)
+        return out.toByteArray()
+    }
+
+    @Test
+    fun parsesExtensibleWavWithPcmSubFormatGuid() {
+        val pcmGuid = byteArrayOf(
+            0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x00,
+            0x80.toByte(), 0x00, 0x00, 0xAA.toByte(), 0x00, 0x38, 0x9B.toByte(), 0x71
+        )
+        val pcmBytes = ByteArray(120) { it.toByte() }
+        val wav = buildExtensibleWav(40, pcmGuid, pcmBytes)
+        val parsed = WavAudio.parse(wav)
+        assertNotNull(parsed)
+        assertEquals(24000, parsed!!.sampleRate)
+        assertEquals(1, parsed.channels)
+        assertEquals(120, parsed.data.size)
+    }
+
+    @Test
+    fun rejectsExtensibleWavWithNonPcmSubFormatOrTruncatedFmt() {
+        // KSDATAFORMAT_SUBTYPE_IEEE_FLOAT (first byte = 0x03 instead of 0x01)
+        val floatGuid = byteArrayOf(
+            0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x00,
+            0x80.toByte(), 0x00, 0x00, 0xAA.toByte(), 0x00, 0x38, 0x9B.toByte(), 0x71
+        )
+        val pcmBytes = ByteArray(120) { it.toByte() }
+        assertNull(WavAudio.parse(buildExtensibleWav(40, floatGuid, pcmBytes)))
+        assertNull(WavAudio.parse(buildExtensibleWav(18, null, pcmBytes)))
+    }
+
     @Test
     fun rejectsNonWav() {
         assertNull(WavAudio.parse("<html>not wav</html>".toByteArray()))

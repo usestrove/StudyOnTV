@@ -31,32 +31,38 @@ object ApkInstaller {
         return sigs?.map { java.security.MessageDigest.getInstance("SHA-256").digest(it.toByteArray()).joinToString("") { b -> "%02x".format(b) } }?.toSet() ?: emptySet()
     }
 
-    /** 包名一致、版本更高、签名与当前安装的版本一致（镜像下载也不会被替换成别人的包） */
+    internal fun checkLocalOnlyBlocked(localOnly: Boolean = LocalOnlyGuard.enabled): String? =
+        if (localOnly) "仅本地隐私版（EU Local-Only）已禁用应用内下载与安装" else null
+
+    internal fun validateDownloadedSize(done: Long, contentLength: Long): String? = when {
+        done <= 0L -> "下载内容为空，请重试"
+        contentLength > 0L && done != contentLength -> "下载不完整（已接收 $done / $contentLength 字节），请重试"
+        else -> null
+    }
+
+    /** 包名一致、版本更高、签名与当前安装的版本一致（无副作用，返回错误文案，null 表示通过） */
     @Suppress("DEPRECATION")
-    private fun validUpdate(ctx: Context, file: File): Boolean {
+    private fun validateArchive(ctx: Context, file: File): String? {
         val flags = if (Build.VERSION.SDK_INT >= 28) android.content.pm.PackageManager.GET_SIGNING_CERTIFICATES else android.content.pm.PackageManager.GET_SIGNATURES
-        val archive = ctx.packageManager.getPackageArchiveInfo(file.absolutePath, flags) ?: run { lastError = "安装包损坏或不完整"; return false }
+        val archive = ctx.packageManager.getPackageArchiveInfo(file.absolutePath, flags) ?: return "安装包损坏或不完整"
         archive.applicationInfo?.let { it.sourceDir = file.absolutePath; it.publicSourceDir = file.absolutePath }
         val current = ctx.packageManager.getPackageInfo(ctx.packageName, flags)
-        if (archive.packageName != ctx.packageName) { lastError = "安装包与本应用不符"; return false }
-        if (archive.versionCode <= current.versionCode) { lastError = "安装包版本不比当前新"; return false }
+        if (archive.packageName != ctx.packageName) return "安装包与本应用不符"
+        if (archive.versionCode <= current.versionCode) return "安装包版本不比当前新"
         val mine = signatures(ctx, current)
         val theirs = signatures(ctx, archive)
-        if (mine.isEmpty() || theirs.isEmpty() || mine.intersect(theirs).isEmpty()) { lastError = "安装包签名与当前版本不一致，已拒绝"; return false }
-        return true
+        if (mine.isEmpty() || theirs.isEmpty() || mine.intersect(theirs).isEmpty()) return "安装包签名与当前版本不一致，已拒绝"
+        return null
     }
 
     fun alreadyDownloaded(ctx: Context, sizeHint: Long): Boolean {
         val f = apkFile(ctx)
-        return f.exists() && (sizeHint <= 0 || f.length() == sizeHint) && validUpdate(ctx, f)
+        return f.exists() && (sizeHint <= 0 || f.length() == sizeHint) && validateArchive(ctx, f) == null
     }
 
     /** 依次尝试直连和各个加速镜像，任一线路成功即返回；若蒲公英签名链接过期返回 HTML，自动刷新一次下载地址重试 */
     fun download(ctx: Context, url: String, sha256: String, onSource: (String) -> Unit, onProgress: (Int) -> Unit): File? {
-        if (LocalOnlyGuard.enabled) {
-            lastError = "仅本地隐私版（EU Local-Only）已禁用应用内下载与安装"
-            return null
-        }
+        checkLocalOnlyBlocked()?.let { lastError = it; return null }
         lastError = ""
         for ((name, candidate) in Updater.downloadCandidates(ctx, url)) {
             onSource(name)
@@ -81,7 +87,7 @@ object ApkInstaller {
 
     private fun downloadFrom(ctx: Context, url: String, sha256: String, onProgress: (Int) -> Unit): File? {
         val target = apkFile(ctx)
-        val partial = File(dir(ctx), "update.pending.apk")
+        val partial = File(dir(ctx), "update.pending.${java.util.UUID.randomUUID()}.apk")
         var conn: HttpURLConnection? = null
         try {
             var currentUrl = URL(url)
@@ -128,11 +134,11 @@ object ApkInstaller {
             }
             val total = conn!!.getHeaderField("Content-Length")?.toLongOrNull() ?: -1L
             val digest = java.security.MessageDigest.getInstance("SHA-256")
+            var done = 0L
             conn!!.inputStream.use { input ->
                 partial.outputStream().use { output ->
                     val buf = ByteArray(64 * 1024)
                     var read: Int
-                    var done = 0L
                     var shown = -1
                     var checkedMagic = false
                     while (input.read(buf).also { read = it } > 0) {
@@ -154,9 +160,10 @@ object ApkInstaller {
                     output.flush()
                 }
             }
+            validateDownloadedSize(done, total)?.let { lastError = it; return null }
             val actual = digest.digest().joinToString("") { "%02x".format(it) }
             if (sha256.isNotEmpty() && !actual.equals(sha256, true)) { lastError = "安装包校验失败（SHA-256 不一致）"; return null }
-            if (!validUpdate(ctx, partial)) return null
+            validateArchive(ctx, partial)?.let { lastError = it; return null }
             if (target.exists()) target.delete()
             if (!partial.renameTo(target)) { lastError = "无法保存安装包"; return null }
             onProgress(100)
@@ -171,6 +178,7 @@ object ApkInstaller {
     }
 
     fun install(ctx: Context, file: File): Boolean {
+        checkLocalOnlyBlocked()?.let { lastError = it; return false }
         lastError = ""
         Prefs.setUpdateInstallError(ctx, "")
         if (!canInstall(ctx)) {
@@ -237,6 +245,7 @@ object ApkInstaller {
 
     /** 会话走不通时（例如电视限制了后台拉起确认页）退回系统安装器 */
     fun fallbackToView(ctx: Context): Boolean {
+        checkLocalOnlyBlocked()?.let { lastError = it; return false }
         val file = apkFile(ctx)
         if (!file.exists()) { lastError = "安装包已丢失，请重新下载"; return false }
         return installView(ctx, file)

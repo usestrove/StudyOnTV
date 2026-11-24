@@ -20,6 +20,7 @@ import android.webkit.WebView
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.LinearLayout
+import android.widget.ScrollView
 import android.widget.TextView
 import org.json.JSONObject
 
@@ -111,15 +112,13 @@ class GateOverlay(
         lastError = detail
     }
 
-    private fun pageFor(reason: String): String =
-        if (reason in listOf("timeup", "feedback", "")) "quiz" else "lock?reason=$reason"
-
     fun show(reason: String): Boolean {
         if (attached) {
             // 已经挂载时管控原因变化（例如答题页中途跳进系统设置变成 settings，或恢复为 timeup）也要切换目标路由
             if (reason != currentReason) {
                 currentReason = reason
-                val targetUrl = Prefs.localBase(context) + "#/" + pageFor(reason)
+                dismissInlineInput(notifyCancel = true)
+                val targetUrl = Prefs.localBase(context) + "#/" + gateLearningPage(reason)
                 web?.let { view ->
                     view.loadUrl(targetUrl)
                     view.evaluateJavascript("window.SOTV_RESUME&&SOTV_RESUME()", null)
@@ -135,7 +134,7 @@ class GateOverlay(
         }
         handler.removeCallbacks(release); releaseScheduled = false
         val reused = web != null
-        val page = pageFor(reason)
+        val page = gateLearningPage(reason)
         val url = Prefs.localBase(context) + "#/$page"
         val view = web ?: WebShell(context).create("about:blank").also { created ->
             created.addJavascriptInterface(Bridge(), "SOTVNative")
@@ -187,10 +186,12 @@ class GateOverlay(
         }
     }
 
-    fun suspend() {
+    fun suspend() = suspendInternal(notifyCancel = true)
+
+    private fun suspendInternal(notifyCancel: Boolean) {
         handler.removeCallbacks(verifyVisibility)
         handler.removeCallbacks(probePageTask)
-        dismissInlineInput(notifyCancel = false)
+        dismissInlineInput(notifyCancel = notifyCancel)
         val host = container ?: return
         if (attached) try { manager.removeViewImmediate(host) } catch (_: Exception) { }
         if (attached && !InputSupport.active) MediaPause.release(context)
@@ -211,13 +212,16 @@ class GateOverlay(
         if (!attached) return
         dismissInlineInput(notifyCancel = false)
         val dp = context.resources.displayMetrics.density
+        val scroll = ScrollView(context).apply {
+            isFillViewport = true
+            isVerticalScrollBarEnabled = false
+            setBackgroundColor(TvUi.background(context))
+            isClickable = true
+        }
         val panel = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER_HORIZONTAL
-            setBackgroundColor(TvUi.background(context))
-            setPadding((64 * dp).toInt(), (36 * dp).toInt(), (64 * dp).toInt(), (24 * dp).toInt())
-            isClickable = true
-            isFocusable = true
+            setPadding((64 * dp).toInt(), (24 * dp).toInt(), (64 * dp).toInt(), (24 * dp).toInt())
         }
         panel.addView(TextView(context).apply {
             text = if (passwordMode) "家长验证" else "填写答案"
@@ -292,8 +296,9 @@ class GateOverlay(
         addBtn("清空") { edit.setText("") }
         addBtn("取消") { commit(false) }
         panel.addView(row, LinearLayout.LayoutParams(-1, -2).apply { topMargin = (20 * dp).toInt() })
-        host.addView(panel, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
-        inlineInputPanel = panel
+        scroll.addView(panel, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        host.addView(scroll, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        inlineInputPanel = scroll
         edit.requestFocus()
         edit.post {
             val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
@@ -304,6 +309,9 @@ class GateOverlay(
     private fun dismissInlineInput(notifyCancel: Boolean) {
         val panel = inlineInputPanel ?: return
         inlineInputPanel = null
+        val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
+        val token = panel.findFocus()?.windowToken ?: panel.windowToken
+        if (token != null) imm?.hideSoftInputFromWindow(token, 0)
         (panel.parent as? ViewGroup)?.removeView(panel)
         if (notifyCancel) {
             web?.post {
@@ -332,7 +340,7 @@ class GateOverlay(
         handler.removeCallbacks(verifyVisibility)
         handler.removeCallbacks(probePageTask)
         val view = web ?: return
-        suspend()
+        suspendInternal(notifyCancel = false)
         MediaPause.release(context)
         (view.parent as? ViewGroup)?.removeView(view)
         container = null
@@ -365,14 +373,22 @@ class GateOverlay(
                 }
             }
         }
+        private fun canExitNow(): Boolean = try {
+            DeviceRuntime.learning.status().optBoolean("canExit")
+        } catch (_: Throwable) {
+            false
+        }
         @JavascriptInterface fun resumePrevious() {
+            if (!canExitNow()) return
             handler.post {
+                if (!canExitNow()) return@post
                 val target = GateService.rememberedActive()
                 hide()
                 GateService.hideGates()
                 if (target == null || target == context.packageName || Foreground.isLauncher(target)) return@post
                 // 悬浮层收起后系统通常会把原应用带回前台；没回来就主动拉起
                 handler.postDelayed({
+                    if (!canExitNow()) return@postDelayed
                     val now = try { Foreground.current(context) } catch (_: Exception) { null }
                     if (now == null || now == context.packageName || Foreground.isLauncher(now))
                         DeviceBridge.launchPackage(context, target)
@@ -388,6 +404,8 @@ class GateOverlay(
         }
         @JavascriptInterface fun readAloud(text: String) = SpeechReader.read(context, text, "", ::speechNotice)
         @JavascriptInterface fun readInLanguage(text: String, language: String) = SpeechReader.read(context, text, language, ::speechNotice)
+        /** 听力题：按题指定语速朗读（listenRate），rate 传 -1 表示跟随全局语速 */
+        @JavascriptInterface fun readWithRate(text: String, language: String, rate: Double) = SpeechReader.read(context, text, language, ::speechNotice, rate)
         @JavascriptInterface fun stopReading() = SpeechReader.stop()
         @JavascriptInterface fun playAudio(url: String) = SpeechReader.playAudio(context, url, ::speechNotice)
         /** 最近一次朗读 / 音频播放的结果（失败时 reason/message/degraded 有值，#87 不再静默） */
@@ -466,9 +484,9 @@ class GateOverlay(
             return true
         }
         @JavascriptInterface fun exitToLauncher() {
-            val status = DeviceRuntime.learning.status()
-            if (!status.optBoolean("canExit")) return
+            if (!canExitNow()) return
             handler.post {
+                if (!canExitNow()) return@post
                 hide()
                 if (goHome?.invoke() != true) context.startActivity(Intent(Intent.ACTION_MAIN)
                     .addCategory(Intent.CATEGORY_HOME).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))

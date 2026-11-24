@@ -17,6 +17,7 @@ object BuglyInit {
     private var initialized = false
 
     fun init(context: Context) {
+        if (LocalOnlyGuard.enabled) return
         if (initialized) return
         if (!Prefs.buglyConsent(context)) return
         try {
@@ -35,6 +36,7 @@ object BuglyInit {
 
     /** 用户同意后立即初始化并上传待报告的崩溃 */
     fun initWithConsent(context: Context) {
+        if (LocalOnlyGuard.enabled) return
         Prefs.setBuglyConsent(context, true)
         initialized = false   // 重置，让 init() 重新执行
         init(context)
@@ -42,7 +44,7 @@ object BuglyInit {
 
     /** 上报权限丢失等非致命事件（不需要用户同意，不含个人数据） */
     fun reportPermissionLost(name: String, detail: String) {
-        if (!initialized) return
+        if (LocalOnlyGuard.enabled || !initialized) return
         try {
             com.tencent.bugly.crashreport.CrashReport.postCatchedException(
                 RuntimeException("PermissionLost: $name — $detail")

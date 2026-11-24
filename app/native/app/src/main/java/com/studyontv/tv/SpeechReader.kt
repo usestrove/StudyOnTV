@@ -39,7 +39,7 @@ object SpeechReader {
     /** 设备级朗读语言覆盖："" 跟随题目、"system" 跟随系统，其余为固定语言标签 */
     private val OVERRIDES = LANGUAGES + listOf("system")
 
-    private val main = Handler(Looper.getMainLooper())
+    private val main by lazy { Handler(Looper.getMainLooper()) }
     private val worker = Executors.newSingleThreadExecutor()
     /** 下一分段的预合成放到独立线程，绝不堵塞当前分段在 worker 上的 PCM 播放。 */
     private val prefetchWorker = Executors.newSingleThreadExecutor()
@@ -52,7 +52,8 @@ object SpeechReader {
     private val synthCache = object : LinkedHashMap<String, ByteArray>(4, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, ByteArray>?): Boolean = size > 6
     }
-    /** 云端 WAV 走 AudioTrack 播放（华为等设备的 MediaPlayer 播不了，用户反馈），stopNow 时释放 */
+    /** 云端 WAV 走 AudioTrack 播放（华为等设备的 MediaPlayer 播不了，用户反馈），stopNow 暂停打断、playPcm finally 唯一负责释放 */
+    private val trackLock = Any()
     @Volatile private var track: AudioTrack? = null
     private var audioFile: File? = null
     private var system: TextToSpeech? = null
@@ -75,10 +76,13 @@ object SpeechReader {
     /** 桥的回报回调（只在一次朗读 / 播放期间持有，stopNow 释放，避免长期抓住 WebView） */
     private var notice: ((JSONObject) -> Unit)? = null
     private var cachedContext: Context? = null
-    private var currentText = ""
-    private var currentLanguage = ""
-    private var lastUtteranceId = ""
-    private var retriedDefault = false
+    @Volatile private var currentText = ""
+    @Volatile private var currentLanguage = ""
+    /** 单次朗读的语速覆盖：听力题可以按题指定，-1 表示跟随全局 speechRate */
+    @Volatile private var currentRate = -1.0
+    @Volatile private var lastUtteranceId = ""
+    @Volatile private var retriedDefault = false
+    @Volatile private var retriedSpeakError = false
     // 走媒体流而不是无障碍流：华为智慧屏、TCL 这类电视上无障碍流常常没有输出，
     // 表现就是「点了朗读没声音」；媒体流一定会经过电视的扬声器 / HDMI。
     private val attributes get() = AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA)
@@ -149,9 +153,7 @@ object SpeechReader {
             require(input.getString(key).length <= 200); next.put(key, input.getString(key).trim())
         }
         require(next.optString("azureRegion").matches(Regex("[a-z0-9-]*"))) { "Azure 区域格式错误" }
-        for (key in listOf("azureKey", "aliyunSecret", "deepseekKey")) if (input.has(key) && input.optString(key).isNotBlank()) {
-            require(input.getString(key).length <= 500); next.put(key, input.getString(key).trim())
-        }
+        applySpeechKeyMutations(next, input)
         // 在朗读里填写 DeepSeek Key 时，若「模型 API」选的是 DeepSeek 且还没填 Key，自动同步过去，避免家长填两遍
         val newDeepseekKey = input.optString("deepseekKey").trim()
         if (newDeepseekKey.isNotEmpty()) {
@@ -164,7 +166,6 @@ object SpeechReader {
                 }
             } catch (_: Exception) { }
         }
-        if (input.optBoolean("clearKeys")) { next.remove("azureKey"); next.remove("aliyunSecret"); next.remove("deepseekKey") }
         store.set("speech_settings", next.toString())
         synchronized(tokenLock) { token = ""; tokenExpires = 0L; tokenKey = "" }
         synchronized(synthCache) { synthCache.clear() }
@@ -174,12 +175,16 @@ object SpeechReader {
     /**
      * 朗读。`language` 是题目语言；引擎不支持时先回落设备默认语言，再不行回报失败。
      * `notice` 由桥传入，失败时回调（网页里有 window.SOTV_SPEECH_NOTICE 就能显示提示）。
+     * `rate` 是本次朗读的语速（听力题的 listenRate），-1 表示用朗读设置里的全局语速。
      */
-    fun read(context: Context, text: String, language: String = "", notice: ((JSONObject) -> Unit)? = null) {
+    fun read(context: Context, text: String, language: String = "", notice: ((JSONObject) -> Unit)? = null, rate: Double = -1.0) {
         if (text.isBlank()) return
         val app = context.applicationContext
         main.post {
             val config = try { JSONObject(DeviceRuntime.store.get("speech_settings", "{}")) } catch (_: Throwable) { JSONObject() }
+            // 听力题按题指定语速：写进本次配置副本，云端合成与缓存键都会跟着用这个语速
+            currentRate = if (rate.isFinite() && rate in 0.7..1.5) rate else -1.0
+            if (currentRate > 0) config.put("speechRate", currentRate)
             val mode = config.optString("mode", "auto")
             val chosen = when {
                 LocalOnlyGuard.enabled -> "system"
@@ -199,7 +204,7 @@ object SpeechReader {
             val request = generation
             this.notice = notice
             cachedContext = app
-            val clean = text.take(10000)
+            val clean = safeTruncate(text, 10000)
             // #126：家长可以在朗读设置里指定设备朗读语言；留空就跟随每道题的语言标注
             val spoken = when (val override = config.optString("readLanguage").trim()) {
                 "system" -> ""          // 跟随设备系统语言
@@ -209,6 +214,12 @@ object SpeechReader {
             if (chosen == "system") systemRead(app, clean, spoken, request)
             else cloudPart(app, cloudChunks(clean, chosen), 0, spoken, config, chosen, request)
         }
+    }
+
+    /** 本次朗读实际使用的语速：听力题按题指定优先，否则取朗读设置里的全局值 */
+    private fun rateOf(config: JSONObject): Double {
+        val raw = if (currentRate in 0.7..1.5) currentRate else config.optDouble("speechRate", 1.0)
+        return raw.takeIf { it.isFinite() }?.coerceIn(0.7, 1.5) ?: 1.0
     }
 
     /** 题目音频。老电视的 https / mp3 兼容性差时不再“点了没反应”：记录诊断 + Toast + 回报给前端 */
@@ -328,7 +339,25 @@ object SpeechReader {
         return fallback
     }
 
-    private fun notify(ok: Boolean, mode: String, reason: String, requested: String, language: String, degraded: Boolean, message: String) {
+    internal fun currentGeneration(): Int = generation
+
+    internal fun bumpGeneration(): Int {
+        pending = null
+        notice = null
+        return ++generation
+    }
+
+    internal fun notify(
+        ok: Boolean,
+        mode: String,
+        reason: String,
+        requested: String,
+        language: String,
+        degraded: Boolean,
+        message: String,
+        request: Int? = null
+    ) {
+        if (request != null && request != generation) return
         val payload = failureNotice(mode, reason, requested, language, degraded, message).put("ok", ok)
         last = payload
         // 成功只更新状态；只有失败才写诊断 + 推给网页（避免正常朗读也被当成提示）
@@ -336,11 +365,15 @@ object SpeechReader {
         Diag.warn("Speech", "failed mode=$mode reason=$reason requested=${requested.ifEmpty { "-" }} used=${language.ifEmpty { "-" }} message=$message")
         // 页面上没有 SOTV_SPEECH_NOTICE 时（老版本网页）至少让电视屏幕上有个提示，不能点了没反应
         if (reason in TOAST_REASONS) main.post {
+            if (request != null && request != generation) return@post
             try { cachedContext?.let { Toast.makeText(it, message, Toast.LENGTH_LONG).show() } } catch (_: Exception) { }
         }
         val callback = notice ?: return
         val copy = JSONObject(payload.toString())
-        main.post { try { callback(copy) } catch (_: Exception) { } }
+        main.post {
+            if (request != null && request != generation) return@post
+            try { callback(copy) } catch (_: Exception) { }
+        }
     }
 
     /** 失败回报：写状态 + 诊断，并回调桥（可在任意线程调用） */
@@ -361,13 +394,13 @@ object SpeechReader {
     private fun stopNow(stopSystem: Boolean = true) {
         generation++; pending = null
         if (stopSystem) system?.stop()
-        track?.let {
-            try { it.pause(); it.flush() } catch (_: Exception) { }
-            try { it.release() } catch (_: Exception) { }
+        synchronized(trackLock) {
+            track?.let {
+                try { it.pause(); it.flush() } catch (_: Exception) { }
+            }
         }
-        track = null
         player?.release(); player = null; audioFile?.delete(); audioFile = null
-        markSpeaking(false); currentText = ""; currentLanguage = ""; lastUtteranceId = ""; retriedDefault = false
+        markSpeaking(false); currentText = ""; currentLanguage = ""; lastUtteranceId = ""; retriedDefault = false; retriedSpeakError = false
         notice = null
     }
 
@@ -381,10 +414,10 @@ object SpeechReader {
         @Deprecated("Deprecated in Java")
         override fun onError(utteranceId: String?) = onError(utteranceId, TextToSpeech.ERROR)
         override fun onError(utteranceId: String?, errorCode: Int) {
-            markSpeaking(false)
             Diag.warn("Speech", "utterance error id=$utteranceId code=$errorCode language=${currentLanguage.ifEmpty { "-" }}")
             val request = utteranceId?.split("-")?.getOrNull(1)?.toIntOrNull() ?: return
             if (request != generation) return
+            markSpeaking(false)
             val text = currentText; val context = cachedContext
             val fallback = defaultLanguage()
             if (!retriedDefault && context != null && text.isNotEmpty() && currentLanguage != fallback) {
@@ -399,6 +432,7 @@ object SpeechReader {
     }
 
     private fun systemRead(context: Context, text: String, language: String, request: Int, mode: String = "system", cloudError: String = "") {
+        if (request != generation) return
         cachedContext = context.applicationContext
         val speak = { if (request == generation) speakSystem(context, text, language, request, mode, cloudError) }
         if (ready) speak()
@@ -447,10 +481,11 @@ object SpeechReader {
         }
         try { engine.setAudioAttributes(attributes) } catch (_: Exception) { }
         try {
-            val rate = currentSettings().optDouble("speechRate", 1.0).takeIf { it.isFinite() }?.coerceIn(0.7, 1.5) ?: 1.0
+            val rate = rateOf(currentSettings())
             engine.setSpeechRate(rate.toFloat())
         } catch (_: Exception) { }
-        currentText = text; currentLanguage = plan.language; retriedDefault = plan.degraded
+        currentText = text; currentLanguage = plan.language
+        if (plan.degraded) retriedDefault = true
         // 按句子攒到 180 字再排队朗读：电视内置 TTS 引擎读几千字的长句常常中途断掉（用户反馈「朗读不完整」），
         // 拆成短句用 QUEUE_ADD 串起来更稳，句间停顿也更自然。
         val max = minOf(180, TextToSpeech.getMaxSpeechInputLength())
@@ -462,9 +497,9 @@ object SpeechReader {
                 Diag.warn("Speech", "engine.speak returned ERROR on part $index, reinitializing TTS")
                 try { engine.shutdown() } catch (_: Exception) { }
                 system = null; ready = false
-                if (!retriedDefault) {
-                    retriedDefault = true
-                    systemRead(context, text, language, request, mode)
+                if (!retriedSpeakError) {
+                    retriedSpeakError = true
+                    systemRead(context, text, language, request, mode, cloudError)
                 } else {
                     notify(false, mode, "speak-error", plan.requested, plan.language, plan.degraded,
                         "系统语音引擎无响应，请重试或改用云端语音")
@@ -478,21 +513,55 @@ object SpeechReader {
 
     private fun currentSettings(): JSONObject = try { JSONObject(DeviceRuntime.store.get("speech_settings", "{}")) } catch (_: Exception) { JSONObject() }
 
+    internal fun safeTruncate(text: String, maxChars: Int): String {
+        if (maxChars <= 0) return ""
+        if (text.length <= maxChars) return text
+        var end = maxChars
+        if (end > 0 && Character.isHighSurrogate(text[end - 1])) end--
+        return text.substring(0, end)
+    }
+
+    internal fun chunkCodePointSafe(text: String, limit: Int): List<String> {
+        if (text.isEmpty() || limit <= 0) return if (text.isEmpty()) emptyList() else listOf(text)
+        val out = ArrayList<String>()
+        var pos = 0
+        while (pos < text.length) {
+            var end = minOf(pos + limit, text.length)
+            if (end < text.length && end > pos &&
+                Character.isHighSurrogate(text[end - 1]) && Character.isLowSurrogate(text[end])
+            ) {
+                if (end - 1 > pos) end-- else end++
+            }
+            out.add(text.substring(pos, end))
+            pos = end
+        }
+        return out
+    }
+
     /**
      * 云端合成的分段。DeepSeek 一次最多读 1 万字，按句子攒到 400 字再请求，避免长题被切成十几段；
-     * 其他通路保持原来的 150 字。
+     * 其他通路按代理对安全切分 150 码元，绝不劈裂 emoji 或 Unicode 数学符号。
      */
     fun cloudChunks(text: String, mode: String = "azure"): List<String> =
-        if (mode == "deepseek") packedSentences(text, 400) else text.chunked(150)
+        if (mode == "deepseek") packedSentences(text, 400) else chunkCodePointSafe(text, 150)
 
     private val SENTENCE_ENDS = "。！？!?；;\n"
 
     private fun packedSentences(text: String, limit: Int): List<String> {
         val pieces = ArrayList<String>(); val current = StringBuilder()
         fun flush() { val piece = current.toString().trim(); if (piece.isNotEmpty()) pieces.add(piece); current.setLength(0) }
-        for (ch in text) {
-            current.append(ch)
-            if (ch in SENTENCE_ENDS || current.length >= limit) flush()
+        var i = 0
+        while (i < text.length) {
+            val ch = text[i]
+            if (Character.isHighSurrogate(ch) && i + 1 < text.length && Character.isLowSurrogate(text[i + 1])) {
+                current.append(ch).append(text[i + 1])
+                i += 2
+                if (current.length >= limit) flush()
+            } else {
+                current.append(ch)
+                i++
+                if (ch in SENTENCE_ENDS || current.length >= limit) flush()
+            }
         }
         flush()
         val packed = ArrayList<String>(); val buffer = StringBuilder()
@@ -504,17 +573,12 @@ object SpeechReader {
         return packed.ifEmpty { listOf(text) }
     }
 
-    /**
-     * DeepSeek 的 Key：朗读设置里填了就用它；没填时自动复用「模型 API」里同一家服务商（DeepSeek）的 Key，
-     * 家长不用为了朗读再填一遍。
-     */
-    fun deepseekKey(config: JSONObject = currentSettings(), store: LocalStore? = null): String {
+    internal fun resolveDeepseekKey(config: JSONObject, gradingJsonProvider: () -> String): String {
         val own = config.optString("deepseekKey").trim()
         if (own.isNotEmpty()) return own
         if (!config.optBoolean("reuseGradingKey", true)) return ""
         return try {
-            val s = store ?: DeviceRuntime.store
-            val grading = JSONObject(s.get("grading_settings", "{}"))
+            val grading = JSONObject(gradingJsonProvider())
             val provider = grading.optString("provider", "deepseek").trim()
             val endpoint = grading.optString("endpoint", "https://api.deepseek.com/v1").trim()
             if (provider == "deepseek" || endpoint.contains("api.deepseek.com", ignoreCase = true)) {
@@ -523,11 +587,22 @@ object SpeechReader {
         } catch (_: Exception) { "" }
     }
 
-    /** 语音转写要用的 DeepSeek Key；空串表示继续用系统识别器（电视上常常没有） */
-    fun recognizeKey(store: LocalStore): String {
-        val config = try { JSONObject(store.get("speech_settings", "{}")) } catch (_: Exception) { JSONObject() }
-        return if (config.optString("recognizeMode", "system") == "system") "" else deepseekKey(config)
+    /**
+     * DeepSeek 的 Key：朗读设置里填了就用它；没填时自动复用「模型 API」里同一家服务商（DeepSeek）的 Key，
+     * 家长不用为了朗读再填一遍。
+     */
+    fun deepseekKey(config: JSONObject = currentSettings(), store: LocalStore? = null): String =
+        resolveDeepseekKey(config) { (store ?: DeviceRuntime.store).get("grading_settings", "{}") }
+
+    internal fun resolveRecognizeKey(localOnly: Boolean, speechJson: String, gradingJsonProvider: () -> String): String {
+        if (localOnly) return ""
+        val config = try { JSONObject(speechJson) } catch (_: Exception) { JSONObject() }
+        return if (config.optString("recognizeMode", "system") == "system") "" else resolveDeepseekKey(config, gradingJsonProvider)
     }
+
+    /** 语音转写要用的 DeepSeek Key；空串表示继续用系统识别器（电视上常常没有） */
+    fun recognizeKey(store: LocalStore): String =
+        resolveRecognizeKey(LocalOnlyGuard.enabled, store.get("speech_settings", "{}")) { store.get("grading_settings", "{}") }
 
     /** DeepSeek 语音合成：返回 wav 字节（metrics 见 https://api-docs.deepseek.com/zh-cn/guides/tts） */
     private fun deepseekBytes(config: JSONObject, text: String, language: String): ByteArray {
@@ -539,9 +614,36 @@ object SpeechReader {
         return postBytes("https://api.deepseek.com/v1/tools/tts", key, body, "语音合成")
     }
 
+    /** 先清空旧密钥，再写入本次显式提交的新密钥，确保 clearKeys 与新密钥同传时幂等一致。 */
+    internal fun applySpeechKeyMutations(next: JSONObject, input: JSONObject) {
+        if (input.optBoolean("clearKeys")) {
+            next.remove("azureKey")
+            next.remove("aliyunSecret")
+            next.remove("deepseekKey")
+        }
+        for (key in listOf("azureKey", "aliyunSecret", "deepseekKey")) {
+            if (input.has(key) && input.optString(key).isNotBlank()) {
+                val raw = input.getString(key)
+                require(raw.length <= 500)
+                next.put(key, raw.trim())
+            }
+        }
+    }
+
+    internal fun requireCloudHttpAllowed(what: String, localOnly: Boolean = LocalOnlyGuard.enabled) {
+        if (localOnly) throw IllegalStateException("仅本地隐私版（EU Local-Only）已禁用云端$what")
+    }
+
+    internal fun openCloudConnection(url: String, what: String, localOnly: Boolean = LocalOnlyGuard.enabled): HttpURLConnection {
+        requireCloudHttpAllowed(what, localOnly)
+        return (URL(url).openConnection() as HttpURLConnection).apply {
+            instanceFollowRedirects = false
+        }
+    }
+
     private fun postBytes(url: String, key: String, body: String, what: String): ByteArray {
         val bytes = body.toByteArray(Charsets.UTF_8)
-        val connection = URL(url).openConnection() as HttpURLConnection
+        val connection = openCloudConnection(url, what)
         try {
             connection.requestMethod = "POST"
             connection.connectTimeout = 8000
@@ -602,7 +704,7 @@ object SpeechReader {
      * 会阻塞，调用方放到后台线程。
      */
     fun transcribe(key: String, wav: ByteArray): String {
-        if (LocalOnlyGuard.enabled) throw IllegalStateException("仅本地隐私版（EU Local-Only）已禁用云端语音识别")
+        requireCloudHttpAllowed("语音识别")
         require(key.isNotEmpty()) { "还没填 DeepSeek API Key" }
         require(wav.size > 44) { "没有录到声音" }
         require(wav.size <= 8 * 1024 * 1024) { "录音太长，请分段说" }
@@ -610,7 +712,7 @@ object SpeechReader {
         val head = ("--$boundary\r\nContent-Disposition: form-data; name=\"file\"; filename=\"answer.wav\"\r\n" +
             "Content-Type: audio/wav\r\n\r\n").toByteArray(Charsets.UTF_8)
         val tail = "\r\n--$boundary--\r\n".toByteArray(Charsets.UTF_8)
-        val connection = URL("https://api.deepseek.com/v1/tools/asr").openConnection() as HttpURLConnection
+        val connection = openCloudConnection("https://api.deepseek.com/v1/tools/asr", "语音识别")
         try {
             connection.requestMethod = "POST"
             connection.connectTimeout = 8000
@@ -630,37 +732,101 @@ object SpeechReader {
     }
 
     private val diskLock = Any()
-    private fun diskFile(context: Context, cacheKey: String): File? {
+
+    internal fun isValidCachedAudio(mode: String, bytes: ByteArray): Boolean {
+        if (bytes.isEmpty()) return false
+        return when (mode) {
+            "deepseek" -> bytes.size > 44 && WavAudio.isWave(bytes)
+            else -> {
+                if (bytes.size <= 128) return false
+                val head = firstNonWhitespaceByte(bytes) ?: return false
+                if (head == '{'.code || head == '<'.code || head == '['.code) return false
+                hasMp3Signature(bytes)
+            }
+        }
+    }
+
+    private fun firstNonWhitespaceByte(bytes: ByteArray): Int? {
+        val limit = minOf(bytes.size, 64)
+        for (i in 0 until limit) {
+            val b = bytes[i].toInt() and 0xFF
+            if (b != ' '.code && b != '\t'.code && b != '\r'.code && b != '\n'.code) return b
+        }
+        return null
+    }
+
+    private fun hasMp3Signature(bytes: ByteArray): Boolean {
+        if (bytes.size >= 3 && bytes[0] == 'I'.code.toByte() && bytes[1] == 'D'.code.toByte() && bytes[2] == '3'.code.toByte()) {
+            return true
+        }
+        val scanLimit = minOf(bytes.size - 1, 64)
+        for (i in 0 until scanLimit) {
+            if ((bytes[i].toInt() and 0xFF) == 0xFF && (bytes[i + 1].toInt() and 0xE0) == 0xE0) {
+                return true
+            }
+        }
+        return false
+    }
+
+    private fun diskFileInDir(dir: File, cacheKey: String): File? {
         if (cacheKey.isEmpty()) return null
-        val dir = File(context.cacheDir, "tts_cache").apply { if (!exists()) mkdirs() }
+        if (!dir.exists()) dir.mkdirs()
         val hash = java.security.MessageDigest.getInstance("SHA-256")
             .digest(cacheKey.toByteArray(Charsets.UTF_8))
             .joinToString("") { "%02x".format(it) }
         return File(dir, "$hash.bin")
     }
-    private fun readDiskCache(context: Context, cacheKey: String): ByteArray? = synchronized(diskLock) {
-        val f = diskFile(context, cacheKey) ?: return null
+
+    private fun cacheDir(context: Context): File = File(context.cacheDir, "tts_cache")
+
+    internal fun readDiskCacheFromDir(dir: File, mode: String, cacheKey: String): ByteArray? = synchronized(diskLock) {
+        val f = diskFileInDir(dir, cacheKey) ?: return null
         if (!f.exists()) return null
+        val data = try { f.readBytes() } catch (_: Exception) { null }
+        if (data == null || !isValidCachedAudio(mode, data)) {
+            try { f.delete() } catch (_: Exception) { }
+            return null
+        }
         f.setLastModified(System.currentTimeMillis())
-        return try { f.readBytes() } catch (_: Exception) { null }
+        return data
     }
-    private fun writeDiskCache(context: Context, cacheKey: String, bytes: ByteArray) = synchronized(diskLock) {
-        if (cacheKey.isEmpty() || bytes.size > 512 * 1024) return
-        val f = diskFile(context, cacheKey) ?: return
-        try {
-            f.writeBytes(bytes)
-            val dir = f.parentFile ?: return
-            val files = dir.listFiles() ?: return
-            var total = files.sumOf { it.length() }
-            if (total > 20L * 1024 * 1024) {
-                for (old in files.sortedBy { it.lastModified() }) {
-                    if (total <= 16L * 1024 * 1024) break
-                    val len = old.length()
-                    if (old.delete()) total -= len
+
+    internal fun writeDiskCacheToDir(dir: File, cacheKey: String, bytes: ByteArray) {
+        synchronized(diskLock) {
+            if (cacheKey.isEmpty() || bytes.size > 512 * 1024) return
+            val f = diskFileInDir(dir, cacheKey) ?: return
+            val tmp = File(f.parentFile, "${f.name}.tmp")
+            try {
+                tmp.writeBytes(bytes)
+                if (!tmp.renameTo(f)) {
+                    if (f.exists()) f.delete()
+                    if (!tmp.renameTo(f)) {
+                        tmp.delete()
+                        return
+                    }
                 }
+                val parent = f.parentFile ?: return
+                val files = parent.listFiles { file -> file.isFile && file.name.endsWith(".bin") } ?: return
+                var total = files.sumOf { it.length() }
+                if (total > 20L * 1024 * 1024) {
+                    for (old in files.sortedBy { it.lastModified() }) {
+                        if (total <= 16L * 1024 * 1024) break
+                        val len = old.length()
+                        if (old.delete()) total -= len
+                    }
+                }
+            } catch (_: Exception) {
+                try { tmp.delete() } catch (_: Exception) { }
             }
-        } catch (_: Exception) { }
+        }
     }
+
+    private fun readDiskCache(context: Context, mode: String, cacheKey: String): ByteArray? =
+        readDiskCacheFromDir(cacheDir(context), mode, cacheKey)
+
+    private fun writeDiskCache(context: Context, cacheKey: String, bytes: ByteArray) =
+        writeDiskCacheToDir(cacheDir(context), cacheKey, bytes)
+
     private fun cacheKeyFor(mode: String, config: JSONObject, language: String, part: String): String {
         val rate = config.optDouble("speechRate", 1.0).takeIf { it.isFinite() }?.coerceIn(0.7, 1.5) ?: 1.0
         return when (mode) {
@@ -669,27 +835,44 @@ object SpeechReader {
             else -> ""
         }
     }
-    private fun synthWithCache(context: Context, mode: String, config: JSONObject, language: String, part: String): ByteArray {
-        val cacheKey = cacheKeyFor(mode, config, language, part)
+    internal fun synthWithCacheCore(
+        cacheDir: File,
+        mode: String,
+        cacheKey: String,
+        synthesize: () -> ByteArray
+    ): ByteArray {
         if (cacheKey.isNotEmpty()) {
-            synchronized(synthCache) { synthCache[cacheKey] }?.let { return it }
-            readDiskCache(context, cacheKey)?.let {
+            synchronized(synthCache) { synthCache[cacheKey] }?.let { cached ->
+                if (isValidCachedAudio(mode, cached)) return cached
+                synchronized(synthCache) { synthCache.remove(cacheKey) }
+            }
+            readDiskCacheFromDir(cacheDir, mode, cacheKey)?.let {
                 synchronized(synthCache) { synthCache[cacheKey] = it }
                 return it
             }
         }
-        val rate = config.optDouble("speechRate", 1.0).takeIf { it.isFinite() }?.coerceIn(0.7, 1.5) ?: 1.0
-        val bytes = when (mode) {
-            "deepseek" -> deepseekBytes(config, part, language)
-            "edge" -> EdgeTts.synthesize(part, config.optString("edgeVoice"), language, rate)
-            "azure" -> azure(config, part, language)
-            else -> aliyun(config, part)
+        val bytes = synthesize()
+        if (!isValidCachedAudio(mode, bytes)) {
+            throw IllegalStateException("云端朗读返回的不是音频：${bodySnippet(bytes)}")
         }
         if (cacheKey.isNotEmpty() && bytes.size <= 512 * 1024) {
             synchronized(synthCache) { synthCache[cacheKey] = bytes }
-            writeDiskCache(context, cacheKey, bytes)
+            writeDiskCacheToDir(cacheDir, cacheKey, bytes)
         }
         return bytes
+    }
+
+    private fun synthWithCache(context: Context, mode: String, config: JSONObject, language: String, part: String): ByteArray {
+        val cacheKey = cacheKeyFor(mode, config, language, part)
+        val rate = config.optDouble("speechRate", 1.0).takeIf { it.isFinite() }?.coerceIn(0.7, 1.5) ?: 1.0
+        return synthWithCacheCore(cacheDir(context), mode, cacheKey) {
+            when (mode) {
+                "deepseek" -> deepseekBytes(config, part, language)
+                "edge" -> EdgeTts.synthesize(part, config.optString("edgeVoice"), language, rate)
+                "azure" -> azure(config, part, language)
+                else -> aliyun(config, part)
+            }
+        }
     }
 
     private fun cloudPart(context: Context, parts: List<String>, index: Int, language: String, config: JSONObject, mode: String, request: Int) {
@@ -713,6 +896,9 @@ object SpeechReader {
                     main.post {
                         if (generation != request) return@post
                         playPcm(pcm, request,
+                            onStarted = if (index == 0) {
+                                { notify(true, mode, "ok", language, language, false, "", request) }
+                            } else null,
                             onDone = { cloudPart(context, parts, index + 1, language, config, mode, request) },
                             onError = {
                                 systemRead(context, parts.drop(index).joinToString(""), language, request, mode)
@@ -728,33 +914,50 @@ object SpeechReader {
                         audioFile = file
                         player = MediaPlayer().apply {
                             setAudioAttributes(attributes); setDataSource(file.absolutePath)
-                            setOnCompletionListener {
-                                markSpeaking(false)
-                                release(); player = null; file.delete(); audioFile = null
-                                cloudPart(context, parts, index + 1, language, config, mode, request)
+                            setOnCompletionListener { mp ->
+                                mp.release()
+                                file.delete()
+                                if (generation == request) {
+                                    markSpeaking(false)
+                                    if (player === mp) player = null
+                                    if (audioFile == file) audioFile = null
+                                    cloudPart(context, parts, index + 1, language, config, mode, request)
+                                }
                             }
-                            setOnErrorListener { _, what, extra ->
-                                markSpeaking(false)
-                                release(); player = null; file.delete(); audioFile = null
-                                Diag.warn("Speech", "cloud audio error mode=$mode what=$what extra=$extra, fallback to system")
-                                systemRead(context, parts.drop(index).joinToString(""), language, request, mode)
+                            setOnErrorListener { mp, what, extra ->
+                                mp.release()
+                                file.delete()
+                                if (generation == request) {
+                                    markSpeaking(false)
+                                    if (player === mp) player = null
+                                    if (audioFile == file) audioFile = null
+                                    Diag.warn("Speech", "cloud audio error mode=$mode what=$what extra=$extra, fallback to system")
+                                    systemRead(context, parts.drop(index).joinToString(""), language, request, mode)
+                                }
                                 true
                             }
                             prepare(); markSpeaking(true); start()
+                            if (index == 0) notify(true, mode, "ok", language, language, false, "", request)
                         }
                     } catch (e: Exception) {
                         Diag.warn("Speech", "cloud playback failed mode=$mode ${e.javaClass.simpleName}: ${e.message.orEmpty().take(120)}, fallback to system")
                         player?.release(); player = null; file.delete(); audioFile = null
-                        systemRead(context, parts.drop(index).joinToString(""), language, request, mode)
+                        if (generation == request) {
+                            systemRead(context, parts.drop(index).joinToString(""), language, request, mode)
+                        }
                     }
                 }
             } catch (e: Exception) {
+                if (generation != request) return@execute
                 // 云端合成失败：记诊断并告诉屏幕上的人原因，再回落系统语音（若电视没有系统语音，保留原始云端中文报错）
                 val errMsg = (e.message ?: e.javaClass.simpleName).take(120)
                 Diag.warn("Speech", "cloud synth failed mode=$mode ${e.javaClass.simpleName}: $errMsg, fallback to system")
                 val cloudNotice = if (errMsg.startsWith("DeepSeek") || errMsg.startsWith("云端")) errMsg else "云端朗读失败：$errMsg"
-                notify(false, mode, "cloud-unavailable", language, "", true, cloudNotice)
-                main.post { systemRead(context, parts.drop(index).joinToString(""), language, request, mode, cloudNotice) }
+                notify(false, mode, "cloud-unavailable", language, "", true, cloudNotice, request)
+                main.post {
+                    if (generation != request) return@post
+                    systemRead(context, parts.drop(index).joinToString(""), language, request, mode, cloudNotice)
+                }
             }
         }
     }
@@ -765,13 +968,36 @@ object SpeechReader {
             String(bytes, 0, minOf(bytes.size, 200), Charsets.UTF_8).replace(Regex("\\s+"), " ").trim().take(160)
         } catch (_: Exception) { "" }
 
+    internal fun validatePcmBufferSize(minBytes: Int): Int {
+        require(minBytes > 0) { "AudioTrack minBufferSize invalid ($minBytes)" }
+        return maxOf(minBytes, 16 * 1024)
+    }
+
+    internal fun validateAudioTrackState(state: Int) {
+        if (state != AudioTrack.STATE_INITIALIZED) {
+            throw IllegalStateException("AudioTrack not initialized (state=$state)")
+        }
+    }
+
+    internal fun validatePcmWrite(written: Int, isCurrent: Boolean): Int {
+        if (written > 0) return written
+        if (!isCurrent) return 0
+        throw IllegalStateException("AudioTrack.write failed (code=$written)")
+    }
+
     /**
      * 直接播放 16 位 PCM WAV（DeepSeek 朗读）。
      *
      * 不经过 MediaPlayer / 系统解码器：华为、EMUI 平板上 MediaPlayer 对这类 WAV 会直接
      * `Prepare failed.: status=0x1`。播放仍在 [worker] 里顺序进行，上一段播完再合成下一段。
      */
-    private fun playPcm(pcm: WavAudio.Pcm, request: Int, onDone: () -> Unit, onError: (String) -> Unit) {
+    private fun playPcm(
+        pcm: WavAudio.Pcm,
+        request: Int,
+        onStarted: (() -> Unit)? = null,
+        onDone: () -> Unit,
+        onError: (String) -> Unit
+    ) {
         worker.execute {
             var audioTrack: AudioTrack? = null
             try {
@@ -780,17 +1006,32 @@ object SpeechReader {
                 val format = AudioFormat.Builder().setEncoding(AudioFormat.ENCODING_PCM_16BIT)
                     .setSampleRate(pcm.sampleRate).setChannelMask(mask).build()
                 val minBytes = AudioTrack.getMinBufferSize(pcm.sampleRate, mask, AudioFormat.ENCODING_PCM_16BIT)
-                val created = AudioTrack(attributes, format, maxOf(minBytes, 16 * 1024), AudioTrack.MODE_STREAM,
+                val bufferBytes = validatePcmBufferSize(minBytes)
+                val created = AudioTrack(attributes, format, bufferBytes, AudioTrack.MODE_STREAM,
                     AudioManager.AUDIO_SESSION_ID_GENERATE)
-                audioTrack = created
-                track = created
+                try {
+                    validateAudioTrackState(created.state)
+                } catch (e: Exception) {
+                    try { created.release() } catch (_: Exception) { }
+                    throw e
+                }
+                synchronized(trackLock) {
+                    if (request != generation) {
+                        try { created.release() } catch (_: Exception) { }
+                        return@execute
+                    }
+                    audioTrack = created
+                    track = created
+                }
                 markSpeaking(true)
                 created.play()
+                if (request == generation) onStarted?.invoke()
                 var offset = 0
                 while (offset < pcm.data.size && request == generation) {
                     val written = created.write(pcm.data, offset, minOf(16 * 1024, pcm.data.size - offset))
-                    if (written <= 0) break
-                    offset += written
+                    val advance = validatePcmWrite(written, request == generation)
+                    if (advance == 0) break
+                    offset += advance
                 }
                 // 等缓冲区里的最后一段播完再进入下一句；playbackHeadPosition 是无符号 32 位帧计数
                 val durationMs = pcm.frames * 1000L / pcm.sampleRate.coerceAtLeast(1)
@@ -805,16 +1046,18 @@ object SpeechReader {
                 Diag.warn("Speech", "pcm playback failed $message")
                 main.post { if (request == generation) onError(message) }
             } finally {
-                markSpeaking(false)
-                if (track === audioTrack) track = null
-                try { audioTrack?.pause(); audioTrack?.flush() } catch (_: Exception) { }
-                try { audioTrack?.release() } catch (_: Exception) { }
+                if (request == generation) markSpeaking(false)
+                synchronized(trackLock) {
+                    if (track === audioTrack) track = null
+                    try { audioTrack?.pause(); audioTrack?.flush() } catch (_: Exception) { }
+                    try { audioTrack?.release() } catch (_: Exception) { }
+                }
             }
         }
     }
 
     private fun request(url: String, headers: Map<String, String> = emptyMap(), body: ByteArray? = null): ByteArray {
-        val connection = URL(url).openConnection() as HttpURLConnection
+        val connection = openCloudConnection(url, "语音合成")
         try {
             connection.connectTimeout = 5000; connection.readTimeout = 10000
             headers.forEach { (key, value) -> connection.setRequestProperty(key, value) }
@@ -827,7 +1070,7 @@ object SpeechReader {
             }
         } finally { connection.disconnect() }
     }
-    private fun xml(text: String) = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;").replace("'", "&apos;")
+    private fun xml(text: String) = EdgeTts.escapeXml(text)
     private fun azure(config: JSONObject, text: String, language: String): ByteArray {
         val region = config.getString("azureRegion")
         require(region.matches(Regex("[a-z0-9-]+")))

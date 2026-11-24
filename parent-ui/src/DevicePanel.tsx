@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   ArchiveRestore,
   Check,
+  ChevronDown,
   CloudDownload,
   Copy,
   Download,
@@ -152,9 +153,11 @@ export default function DevicePanel({
   useEffect(() => () => {
     if (pollTimer.current !== null) window.clearTimeout(pollTimer.current);
   }, []);
+  const localOnly = !!device.data?.localOnly;
   const update = useQuery({
     queryKey: ['update', sessionId],
     queryFn: () => api('/api/update'),
+    enabled: !localOnly,
     refetchInterval: polling ? 2000 : false,
   });
   const [name, setName] = useState('');
@@ -688,68 +691,80 @@ export default function DevicePanel({
                 </a>
               </Button>
             </SettingItem>
-            <SettingItem
-              title="参与软件体验提升计划"
-              description="帮助我们持续优化设备兼容性与使用体验，可随时关闭。"
-            >
-              <Switch
-                aria-label="参与软件体验提升计划"
-                checked={!!device.data?.crashUpload?.consent}
-                disabled={crash.isPending || !device.data}
-                onCheckedChange={value => crash.mutate({ consent: value })}
-              />
-            </SettingItem>
-            <SettingItem
-              title="上报地址"
-              description={
-                device.data?.crashUpload?.pending
-                  ? '有待上传日志，下次启动会自动补传。'
-                  : device.data?.crashUpload?.builtInEndpoint
-                    ? '不填就用内置地址；填了会覆盖内置值。支持阿里云 OSS 桶地址或自定义接收端。'
-                    : '阿里云 OSS 桶地址（如 https://bucket.oss-cn-hangzhou.aliyuncs.com）或自定义接收端，留空表示仅本地保留。'
-              }
-              wideControl
-            >
-              <Input
-                aria-label="日志上报地址"
-                className="h-9 w-full sm:w-80"
-                placeholder={device.data?.crashUpload?.builtInEndpoint || 'https://bucket.oss-cn-hangzhou.aliyuncs.com'}
-                autoComplete="off"
-                spellCheck={false}
-                value={endpoint}
-                onChange={event => setEndpoint(event.target.value)}
-                onBlur={saveEndpoint}
-                onKeyDown={event => {
-                  if (event.key === 'Enter') event.currentTarget.blur();
-                }}
-              />
-            </SettingItem>
-            <SettingItem
-              title="访问令牌"
-              description={
-                device.data?.crashUpload?.builtInToken
-                  ? '已内置令牌，留空不改；填了会覆盖它。'
-                  : device.data?.crashUpload?.hasToken
-                    ? '已保存令牌。留空表示不修改。'
-                    : '与 Worker 里的 SECRET_TOKEN 一致，防止上报地址被外人滥用。'
-              }
-              wideControl
-            >
-              <Input
-                aria-label="崩溃上报令牌"
-                type="password"
-                className="h-9 w-full sm:w-80"
-                placeholder={device.data?.crashUpload?.hasToken ? '已保存，留空不修改' : '粘贴 Worker 的访问令牌'}
-                autoComplete="off"
-                spellCheck={false}
-                value={token}
-                onChange={event => setToken(event.target.value)}
-                onBlur={saveToken}
-                onKeyDown={event => {
-                  if (event.key === 'Enter') event.currentTarget.blur();
-                }}
-              />
-            </SettingItem>
+            {!localOnly && (
+              <>
+                <SettingItem
+                  title="参与软件体验提升计划"
+                  description="帮助我们持续优化设备兼容性与使用体验，可随时关闭。"
+                >
+                  <Switch
+                    aria-label="参与软件体验提升计划"
+                    checked={!!device.data?.crashUpload?.consent}
+                    disabled={crash.isPending || !device.data}
+                    onCheckedChange={value => crash.mutate({ consent: value })}
+                  />
+                </SettingItem>
+                <details className="group py-2">
+                  <summary className="flex cursor-pointer list-none items-center gap-1.5 py-2 text-xs text-muted-foreground transition-colors hover:text-foreground [&::-webkit-details-marker]:hidden">
+                    <ChevronDown className="size-3 transition-transform group-open:rotate-180" />
+                    高级自定义上报地址
+                  </summary>
+                  <div className="divide-y divide-border/60">
+                    <SettingItem
+                      title="上报地址"
+                      description={
+                        device.data?.crashUpload?.pending
+                          ? '有待上传日志，下次启动会自动补传。'
+                          : device.data?.crashUpload?.builtInEndpoint
+                            ? '不填就用内置地址；填了会覆盖内置值。支持自定义接收端。'
+                            : '自定义接收端地址，留空表示仅本地保留。'
+                      }
+                      wideControl
+                    >
+                      <Input
+                        aria-label="日志上报地址"
+                        className="h-9 w-full sm:w-80"
+                        placeholder={device.data?.crashUpload?.builtInEndpoint || 'https://example.com/crash'}
+                        autoComplete="off"
+                        spellCheck={false}
+                        value={endpoint}
+                        onChange={event => setEndpoint(event.target.value)}
+                        onBlur={saveEndpoint}
+                        onKeyDown={event => {
+                          if (event.key === 'Enter') event.currentTarget.blur();
+                        }}
+                      />
+                    </SettingItem>
+                    <SettingItem
+                      title="访问令牌"
+                      description={
+                        device.data?.crashUpload?.builtInToken
+                          ? '已内置令牌，留空不改；填了会覆盖它。'
+                          : device.data?.crashUpload?.hasToken
+                            ? '已保存令牌。留空表示不修改。'
+                            : '用于校验自定义上报接口权限，可留空。'
+                      }
+                      wideControl
+                    >
+                      <Input
+                        aria-label="崩溃上报令牌"
+                        type="password"
+                        className="h-9 w-full sm:w-80"
+                        placeholder={device.data?.crashUpload?.hasToken ? '已保存，留空不修改' : '输入访问令牌（可选）'}
+                        autoComplete="off"
+                        spellCheck={false}
+                        value={token}
+                        onChange={event => setToken(event.target.value)}
+                        onBlur={saveToken}
+                        onKeyDown={event => {
+                          if (event.key === 'Enter') event.currentTarget.blur();
+                        }}
+                      />
+                    </SettingItem>
+                  </div>
+                </details>
+              </>
+            )}
             <SettingItem title="设备名称" wideControl>
               <div className="flex w-full items-center gap-2 sm:w-auto">
                 <Input
@@ -1005,6 +1020,15 @@ export default function DevicePanel({
 
         {only === 'update' && (
           <SettingsCard title="版本更新" icon={CloudDownload}>
+            {localOnly ? (
+              <SettingItem
+                title="纯本地版本"
+                description="当前为纯本地版本，不包含在线检查更新或数据上报功能。"
+              >
+                <Badge variant="secondary">仅本地运行</Badge>
+              </SettingItem>
+            ) : (
+            <>
             <SettingItem
               title={updateInfo?.hasUpdate ? `有新版本 v${updateInfo.latest}` : '当前已是最新版本'}
               description={`上次检查：${formatTime(startedAt)}`}
@@ -1074,6 +1098,8 @@ export default function DevicePanel({
                 </pre>
               </div>
               </>
+            )}
+            </>
             )}
           </SettingsCard>
         )}

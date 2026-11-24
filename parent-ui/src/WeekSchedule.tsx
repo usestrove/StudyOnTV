@@ -28,7 +28,8 @@ const TEMPLATES:[string,()=>string[]][]=[
  ['清空',()=>DAYS.map(()=>EMPTY)]
 ];
 
-export default function WeekSchedule({value,onChange,holidayMode,onHolidayMode}:{value:string[];onChange:(v:string[])=>void;holidayMode:string;onHolidayMode:(v:string)=>void}){
+export default function WeekSchedule({value,onChange,holidayMode,onHolidayMode,scheduleMode='allow'}:{value:string[];onChange:(v:string[])=>void;holidayMode:string;onHolidayMode:(v:string)=>void;scheduleMode?:string}){
+ const isControlMode=scheduleMode==='control';
  const paint=useRef<string|null>(null);
  const [info,setInfo]=useState<any>(null);
  const [busy,setBusy]=useState(false);
@@ -45,15 +46,15 @@ export default function WeekSchedule({value,onChange,holidayMode,onHolidayMode}:
  async function sync(){setBusy(true);try{const result=await api('/api/holidays/sync?year='+new Date().getFullYear(),'POST',{},20000);setInfo(result);toast.success(`已同步 ${result.count} 天法定节假日`);}catch(e:any){toast.error(e.message);}finally{setBusy(false);}}
 
  return <FieldSet className="mt-0 min-w-0 gap-3 border-t border-border/60 pt-5">
-  <FieldLegend variant="label" className="mb-0">可用时段</FieldLegend>
+  <FieldLegend variant="label" className="mb-0">{isControlMode?'管控时段':'可用时段'}</FieldLegend>
   <Toolbar aria-label="时段快捷模板" className="min-w-0 flex-wrap">
    <ToolbarGroup className="min-w-0 flex-wrap">
     {TEMPLATES.map(([label,make])=><Button key={label} type="button" size="sm" variant="outline" onClick={()=>onChange(make())}>{label}</Button>)}
    </ToolbarGroup>
   </Toolbar>
   <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
-   <span className="flex items-center gap-1.5"><span className="size-2.5 rounded-sm" style={{background:'var(--primary)'}}/>蓝色：可以看（到点答题解锁）</span>
-   <span className="flex items-center gap-1.5"><span className="size-2.5 rounded-sm" style={{background:'var(--secondary)'}}/>灰色：不开放</span>
+   <span className="flex items-center gap-1.5"><span className="size-2.5 rounded-sm" style={{background:'var(--primary)'}}/>{isControlMode?'蓝色：管控时段（需答题解锁）':'蓝色：可以看（到点答题解锁）'}</span>
+   <span className="flex items-center gap-1.5"><span className="size-2.5 rounded-sm" style={{background:'var(--secondary)'}}/>{isControlMode?'灰色：自由看（不限制）':'灰色：不开放'}</span>
   </div>
   <div className="week-wrap min-w-0">
    <div className="week-scale">{[0,6,12,18,24].map(h=><span key={h}>{String(h).padStart(2,'0')}:00</span>)}</div>
