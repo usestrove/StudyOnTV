@@ -1,21 +1,21 @@
 {
-  "version": "0.5.6",
-  "versionCode": 53,
+  "version": "0.5.7",
+  "versionCode": 54,
   "force": false,
-  "notes": "v0.5.6\n\n- **修复 v0.5.5 虚拟机/部分电视启动闪退**：移除 Android ART ICU 正则不支持的 `\\p{IsHan}` 静态正则，改为零正则纯字符区间处理，全机型稳定启动。\n- **修复选项与闪卡中的 LaTeX 公式未渲染**：修复选项与闪卡节点在挂载进 DOM 前调用公式渲染被跳过的问题，选项中的 `$`、`$\\frac{x}{3}$` 等公式现已正常渲染。\n\n- **多孩子独立切换密码**：家长端「设置 → 孩子档案」可为每个孩子单独设置/清空切换密码（加盐哈希存储），防止高年级孩子切换到低年级档案刷简单题拿时长；家长端管理免密切换，电视/平板端切带锁档案时支持遥控器与触屏输入密码（并支持家长主密码兜底）。\n- **安全合规后台升级**：家长端「设置 → 版本更新」新增「自动后台下载更新包」开关（后台静默下载并落盘校验 SHA-256，点击更新时 0 秒直接安装），并支持 Android 12+ 官方自更新 API 与 Device Owner 原生静默更新（完全合规、零无障碍模拟点击，EU 纯本地版严格隔离）。",
-  "publishedAt": "2026-11-24T04:13:09.576Z",
+  "notes": "v0.5.7\n\n- **多设备管理与一键批量同步（#171）**：\n  - 局域网自动发现家里所有在线 StudyOnTV 电视/平板（纯局域网 UDP 发现，EU 纯本地版同样可用）；\n  - 家长端新增「多设备」页面与侧边栏快捷切设备入口，支持手动添加收藏、一键切换管理；\n  - 支持勾选多台目标设备，按需一键批量同步「学习计划规则」「题库（合并或覆盖）」「朗读与语音识别」「AI 批改与出题配置」，绝不覆盖目标设备的独立观看时长与运行状态。\n\n- **修复 Edge 朗读在国内网络环境下超时/403/断连失败**：\n  - 优先连接 IPv4 地址（规避部分宽带 IPv6 黑洞超时）；\n  - 修复时钟偏差 1~59 秒跨 5 分钟边界时 403 未按服务端时间重试的问题；\n  - 遇到瞬时 `Connection reset` 自动切换节点重试一次。\n- **修复部分 Android 11 电视偶发 WebView 数据目录锁崩溃**：在 WebView 初始化前自动做进程数据目录隔离，冲突时按 PID 自动隔离恢复，杜绝循环闪退。\n- **清理局域网服务客户端断开噪音日志**：浏览器刷新/切换页面导致的 `Broken pipe` 不再误报错误堆栈。",
+  "publishedAt": "2026-11-24T16:42:07.686Z",
   "assets": {
     "tv": {
-      "name": "StudyOnTV-Android-TV-v0.5.6.apk",
-      "url": "https://github.com/chadyi/StudyOnTV/releases/download/v0.5.6/StudyOnTV-Android-TV-v0.5.6.apk",
-      "sha256": "df5463ea047f86d15843e640f9af165d12cee9f509352ca869390c07a37d0153",
-      "size": 3545198
+      "name": "StudyOnTV-Android-TV-v0.5.7.apk",
+      "url": "https://github.com/chadyi/StudyOnTV/releases/download/v0.5.7/StudyOnTV-Android-TV-v0.5.7.apk",
+      "sha256": "a80b0c18d1c353b54ae9b0a881ec2362d6ac06f9307efde0d36a00a9e28796ed",
+      "size": 3574218
     },
     "mobile": {
-      "name": "StudyOnTV-Mobile-v0.5.6.apk",
-      "url": "https://github.com/chadyi/StudyOnTV/releases/download/v0.5.6/StudyOnTV-Mobile-v0.5.6.apk",
-      "sha256": "1695da9f7b57a93c9bba70e8c95f209e45e9adbacc3ac5aac12c3094b70dd86c",
-      "size": 3546391
+      "name": "StudyOnTV-Mobile-v0.5.7.apk",
+      "url": "https://github.com/chadyi/StudyOnTV/releases/download/v0.5.7/StudyOnTV-Mobile-v0.5.7.apk",
+      "sha256": "d7e0e57c553881356e27065a25d70a41366e9b9102616a7bcd87768846e4e4cd",
+      "size": 3575456
     }
   }
 }

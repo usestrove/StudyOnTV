@@ -25,6 +25,16 @@ object Prefs {
         sp(c).getString("device_name", android.os.Build.MODEL ?: "客厅电视") ?: "客厅电视"
     fun setDeviceName(c: Context, v: String) = sp(c).edit().putString("device_name", v).apply()
 
+    @Synchronized
+    fun deviceId(c: Context): String {
+        val p = sp(c)
+        val existing = p.getString("device_id", null)?.trim().orEmpty()
+        if (existing.isNotEmpty()) return existing
+        val generated = java.util.UUID.randomUUID().toString().replace("-", "").take(16)
+        p.edit().putString("device_id", generated).apply()
+        return generated
+    }
+
     
     fun updateInfo(c: Context): String = sp(c).getString("update_info", "") ?: ""
     fun setUpdateInfo(c: Context, v: String) = sp(c).edit().putString("update_info", v).apply()

@@ -5,8 +5,11 @@ import java.io.ByteArrayOutputStream
 import java.io.EOFException
 import java.io.InputStream
 import java.io.OutputStream
+import java.net.Inet4Address
+import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.Socket
+import java.net.SocketException
 import java.security.SecureRandom
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -64,50 +67,99 @@ object EdgeTts {
         if (localOnly) throw IllegalStateException("仅本地隐私版（EU Local-Only）已禁用 Edge 在线语音")
     }
 
+    internal fun shouldRetryAfter403(usedNowMs: Long, serverMs: Long?): Boolean {
+        if (serverMs == null) return false
+        return secMsGec(serverMs) != secMsGec(usedNowMs) || kotlin.math.abs(serverMs - usedNowMs) >= 60_000L
+    }
+
+    internal fun orderAddressesIpv4First(addresses: List<InetAddress>): List<InetAddress> {
+        val v4 = addresses.filterIsInstance<Inet4Address>()
+        val other = addresses.filter { it !is Inet4Address }
+        return v4 + other
+    }
+
     fun synthesize(text: String, voice: String, language: String = "", rate: Double = 1.0): ByteArray {
         requireOnlineAllowed()
         val chosenVoice = voice.trim().ifEmpty { defaultVoice(language) }
         val pct = (((rate.coerceIn(0.7, 1.5)) - 1.0) * 100.0).toInt()
         val rateStr = if (pct >= 0) "+${pct}%" else "${pct}%"
+        return synthesizeWithRetry(text, chosenVoice, rateStr, addressOffset = 0, allowTransientRetry = true)
+    }
+
+    private fun synthesizeWithRetry(
+        text: String,
+        chosenVoice: String,
+        rateStr: String,
+        addressOffset: Int,
+        allowTransientRetry: Boolean
+    ): ByteArray {
+        val usedNowMs = System.currentTimeMillis() + clockSkewMs
         return try {
-            synthesizeOnce(text, chosenVoice, rateStr, System.currentTimeMillis() + clockSkewMs)
+            synthesizeOnce(text, chosenVoice, rateStr, usedNowMs, addressOffset)
         } catch (e: Handshake403Exception) {
-            val serverMs = e.serverMillis ?: throw IllegalStateException(e.message ?: "Edge 语音握手被拒绝（HTTP 403）")
-            val delta = serverMs - System.currentTimeMillis()
-            // 仅当设备时钟确实与微软服务端偏差超过 60 秒时才用服务端时间重试，否则快速失败，避免双倍等待（#165）
-            if (kotlin.math.abs(delta - clockSkewMs) < 60_000L) {
+            val serverMs = e.serverMillis
+            if (serverMs == null || !shouldRetryAfter403(usedNowMs, serverMs)) {
                 throw IllegalStateException(e.message ?: "Edge 语音握手被拒绝（HTTP 403）")
             }
-            clockSkewMs = delta
-            synthesizeOnce(text, chosenVoice, rateStr, serverMs)
+            clockSkewMs = serverMs - System.currentTimeMillis()
+            try {
+                synthesizeOnce(text, chosenVoice, rateStr, serverMs, addressOffset)
+            } catch (retryErr: Handshake403Exception) {
+                throw IllegalStateException(retryErr.message ?: "Edge 语音握手被拒绝（HTTP 403）")
+            }
+        } catch (e: SocketException) {
+            if (!allowTransientRetry) throw e
+            synthesizeWithRetry(text, chosenVoice, rateStr, addressOffset = addressOffset + 1, allowTransientRetry = false)
+        } catch (e: EOFException) {
+            if (!allowTransientRetry) throw e
+            synthesizeWithRetry(text, chosenVoice, rateStr, addressOffset = addressOffset + 1, allowTransientRetry = false)
         }
     }
 
-    private fun openTlsSocket(): SSLSocket {
-        val raw = Socket()
-        try {
-            raw.connect(InetSocketAddress(HOST, PORT), 10_000)
-            raw.soTimeout = 15_000
-            val sslFactory = SSLSocketFactory.getDefault() as SSLSocketFactory
-            return (sslFactory.createSocket(raw, HOST, PORT, true) as SSLSocket).apply {
-                soTimeout = 15_000
-                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.N) {
-                    sslParameters = sslParameters.apply {
-                        endpointIdentificationAlgorithm = "HTTPS"
+    private fun openTlsSocket(addressOffset: Int = 0): SSLSocket {
+        val resolved = orderAddressesIpv4First(InetAddress.getAllByName(HOST).toList())
+        val candidates = if (resolved.isEmpty()) {
+            listOf<InetAddress?>(null)
+        } else {
+            val n = resolved.size
+            val shift = ((addressOffset % n) + n) % n
+            (0 until minOf(n, 4)).map { i -> resolved[(shift + i) % n] }
+        }
+        var lastError: Throwable? = null
+        for (addr in candidates) {
+            val raw = Socket()
+            try {
+                val target = if (addr != null) InetSocketAddress(addr, PORT) else InetSocketAddress(HOST, PORT)
+                raw.connect(target, 4_500)
+                raw.soTimeout = 15_000
+                val sslFactory = SSLSocketFactory.getDefault() as SSLSocketFactory
+                return (sslFactory.createSocket(raw, HOST, PORT, true) as SSLSocket).apply {
+                    soTimeout = 15_000
+                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.N) {
+                        sslParameters = sslParameters.apply {
+                            endpointIdentificationAlgorithm = "HTTPS"
+                        }
+                    }
+                    startHandshake()
+                    if (!javax.net.ssl.HttpsURLConnection.getDefaultHostnameVerifier().verify(HOST, session)) {
+                        throw javax.net.ssl.SSLPeerUnverifiedException("Hostname $HOST not verified")
                     }
                 }
-                startHandshake()
-                if (!javax.net.ssl.HttpsURLConnection.getDefaultHostnameVerifier().verify(HOST, session)) {
-                    throw javax.net.ssl.SSLPeerUnverifiedException("Hostname $HOST not verified")
-                }
+            } catch (e: Throwable) {
+                try { raw.close() } catch (_: Exception) { }
+                lastError = e
             }
-        } catch (e: Throwable) {
-            try { raw.close() } catch (_: Exception) { }
-            throw e
         }
+        throw lastError ?: IllegalStateException("无法连接 Edge 语音服务")
     }
 
-    private fun synthesizeOnce(text: String, chosenVoice: String, rateStr: String, nowMillis: Long): ByteArray {
+    private fun synthesizeOnce(
+        text: String,
+        chosenVoice: String,
+        rateStr: String,
+        nowMillis: Long,
+        addressOffset: Int = 0
+    ): ByteArray {
         val connId = UUID.randomUUID().toString().replace("-", "")
         val muid = randomHex(16)
         val path = "/consumer/speech/synthesize/readaloud/edge/v1" +
@@ -116,7 +168,7 @@ object EdgeTts {
             "&Sec-MS-GEC-Version=2-$CHROMIUM_VERSION" +
             "&ConnectionId=$connId"
 
-        val socket = openTlsSocket()
+        val socket = openTlsSocket(addressOffset)
         try {
             val out = socket.outputStream
             val input = BufferedInputStream(socket.inputStream, 16 * 1024)

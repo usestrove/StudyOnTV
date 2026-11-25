@@ -158,6 +158,63 @@ class LocalStore(
             return base in EPHEMERAL_KV_KEYS
         }
 
+        /** 多设备裁剪式同步允许的范围白名单 */
+        val SYNC_SCOPES = setOf("config", "questions", "speech", "grading")
+
+        internal fun normalizeSyncScopes(scopes: Collection<String>): Set<String> =
+            scopes.mapTo(LinkedHashSet()) { it.trim().lowercase(Locale.US) }.filterTo(LinkedHashSet()) { it in SYNC_SCOPES }
+
+        /** 仅允许同步学习计划规则（`config` 与 `child:<id>:config`），严禁同步单机运行态计时、密码或设备名。 */
+        internal fun isConfigSyncKvKey(key: String): Boolean {
+            if (key == "config") return true
+            if (key.startsWith("child:") && key.endsWith(":config")) {
+                val childId = key.removePrefix("child:").removeSuffix(":config")
+                return childId.isNotEmpty() && isValidChildId(childId)
+            }
+            return false
+        }
+
+        /**
+         * 纯函数：从备份/源对象按 `scopes` 白名单精准裁剪同步载荷。
+         * 严禁携带 `deviceName`、`activeChild`、`events`、`reviews`、`questionStats`、`questionProgress`
+         * 及任何单机运行态 kv（如 `used_ms` / `free_used_ms` / `credit_ms` / `active_round` / `admin_token`）。
+         */
+        internal fun buildScopedSyncPayload(source: JSONObject, scopes: Set<String>): JSONObject {
+            val validScopes = normalizeSyncScopes(scopes)
+            require(validScopes.isNotEmpty()) { "请至少选择一项需要同步的内容" }
+            val out = JSONObject()
+                .put("format", "studyontv-backup")
+                .put("version", source.optInt("version", 1))
+                .put("exportedAt", source.optLong("exportedAt", System.currentTimeMillis()))
+                .put("appVersion", source.optString("appVersion", BuildConfig.VERSION_NAME))
+                .put("scopes", JSONArray(validScopes.sorted()))
+                .put("includeQuestions", "questions" in validScopes)
+            if ("config" in validScopes) {
+                source.optJSONArray("children")?.let { out.put("children", it) }
+                val filteredKv = JSONObject()
+                source.optJSONObject("kv")?.let { kv ->
+                    val keys = kv.keys()
+                    while (keys.hasNext()) {
+                        val k = keys.next()
+                        if (isConfigSyncKvKey(k)) {
+                            filteredKv.put(k, kv.optString(k, ""))
+                        }
+                    }
+                }
+                out.put("kv", filteredKv)
+            }
+            if ("questions" in validScopes) {
+                out.put("questions", source.optJSONArray("questions") ?: JSONArray())
+            }
+            if ("speech" in validScopes) {
+                source.optJSONObject("speech")?.let { out.put("speech", it) }
+            }
+            if ("grading" in validScopes) {
+                source.optJSONObject("grading")?.let { out.put("grading", it) }
+            }
+            return out
+        }
+
         /** EU Local-Only 模式下清洗单个备份 kv 项（剥离 config 中的公网公益视频与 bank_market_sources 中的公网源）。 */
         internal fun sanitizeKvValueForLocalOnly(key: String, value: String, localOnly: Boolean = LocalOnlyGuard.enabled): String {
             if (!localOnly) return value
@@ -2553,7 +2610,154 @@ class LocalStore(
             .put("bankAutomation", bankAuto)
     }
 
-    fun restoreBackup(backup: JSONObject, mode: String = "replace"): JSONObject {
+    fun exportScopedSync(scopes: Set<String>): JSONObject {
+        val validScopes = normalizeSyncScopes(scopes)
+        require(validScopes.isNotEmpty()) { "请至少选择一项需要同步的内容" }
+        ensureDefaultChild()
+        val source = JSONObject()
+            .put("format", "studyontv-backup")
+            .put("version", 1)
+            .put("exportedAt", System.currentTimeMillis())
+            .put("appVersion", BuildConfig.VERSION_NAME)
+        if ("config" in validScopes) {
+            source.put("children", children())
+            val kvObj = JSONObject()
+            readableDatabase.rawQuery("SELECT k,v FROM kv", null).use { c ->
+                while (c.moveToNext()) {
+                    val k = c.getString(0) ?: continue
+                    if (!isConfigSyncKvKey(k)) continue
+                    kvObj.put(k, c.getString(1) ?: "")
+                }
+            }
+            source.put("kv", kvObj)
+        }
+        if ("questions" in validScopes) {
+            val exportedQuestions = JSONArray()
+            val all = readQuestions(
+                "SELECT questions.*,0 AS presented,0 AS answered_count,0 AS correct_count,-1 AS last_correct FROM questions ORDER BY rowid ASC",
+                emptyArray()
+            )
+            for (i in 0 until all.length()) {
+                val q = MediaStore.inlineQuestionMedia(mediaDir, all.getJSONObject(i))
+                q.remove("stats")
+                exportedQuestions.put(q)
+            }
+            source.put("questions", exportedQuestions)
+        }
+        if ("speech" in validScopes) {
+            source.put("speech", SpeechReader.settings(this))
+        }
+        if ("grading" in validScopes) {
+            source.put("grading", GradingService.settings(this, includeKey = false))
+        }
+        return buildScopedSyncPayload(source, validScopes)
+    }
+
+    fun applyScopedSync(payload: JSONObject, scopes: Set<String>, mode: String = "merge"): JSONObject {
+        require(payload.optString("format") == "studyontv-backup") { "不是有效的题了个题同步数据包" }
+        require(mode in listOf("replace", "merge")) { "同步模式仅支持 replace 或 merge" }
+        val validScopes = normalizeSyncScopes(scopes)
+        require(validScopes.isNotEmpty()) { "请至少选择一项需要同步的内容" }
+
+        val replaceQuestions = mode == "replace"
+        val db = writableDatabase
+        val existingGrading = try { JSONObject(rawGet("grading_settings", "{}")) } catch (_: Exception) { JSONObject() }
+        val existingSpeech = try { JSONObject(rawGet("speech_settings", "{}")) } catch (_: Exception) { JSONObject() }
+        var syncedQuestions = 0
+
+        synchronized(childLock) {
+            db.beginTransaction()
+            try {
+                if ("config" in validScopes) {
+                    payload.optJSONArray("children")?.let { arr ->
+                        for (i in 0 until minOf(arr.length(), MAX_CHILDREN)) {
+                            val c = arr.optJSONObject(i) ?: continue
+                            val id = c.optString("id")
+                            if (!isValidChildId(id)) continue
+                            val name = c.optString("name").trim().ifEmpty { "孩子${i + 1}" }.take(12)
+                            db.insertWithOnConflict("children", null, ContentValues().apply {
+                                put("id", id)
+                                put("name", name)
+                                put("created_at", c.optLong("createdAt", System.currentTimeMillis()))
+                            }, SQLiteDatabase.CONFLICT_IGNORE)
+                        }
+                    }
+                    ensureDefaultChild()
+
+                    payload.optJSONObject("kv")?.let { kv ->
+                        val keys = kv.keys()
+                        while (keys.hasNext()) {
+                            val k = keys.next()
+                            // 严格白名单：只允许学习规则 config / child:<id>:config，绝不写入任何单机运行态或密码键
+                            if (!isConfigSyncKvKey(k)) continue
+                            val sanitized = sanitizeKvValueForLocalOnly(k, kv.optString(k, ""))
+                            db.insertWithOnConflict("kv", null, ContentValues().apply {
+                                put("k", k); put("v", sanitized)
+                            }, SQLiteDatabase.CONFLICT_REPLACE)
+                        }
+                    }
+                }
+
+                if ("questions" in validScopes) {
+                    payload.optJSONArray("questions")?.let { arr ->
+                        if (replaceQuestions) {
+                            db.delete("questions", null, null)
+                        }
+                        for (i in 0 until minOf(arr.length(), 50000)) {
+                            val q = arr.optJSONObject(i) ?: continue
+                            val qid = q.optString("id")
+                            if (!replaceQuestions && qid.isNotEmpty() && questionExists(qid)) continue
+                            upsertQuestion(q)
+                            syncedQuestions++
+                        }
+                    }
+                }
+
+                if ("speech" in validScopes) {
+                    payload.optJSONObject("speech")?.let { s ->
+                        val next = JSONObject(s.toString())
+                        for (uiKey in listOf("deepseekInherited", "deepseekReady")) next.remove(uiKey)
+                        for (secret in listOf("azureKey", "aliyunSecret", "deepseekKey")) {
+                            next.remove(secret + "Set")
+                            if (next.optString(secret).isBlank() && existingSpeech.optString(secret).isNotBlank()) {
+                                next.put(secret, existingSpeech.getString(secret))
+                            }
+                        }
+                        rawSet("speech_settings", next.toString())
+                    }
+                }
+
+                if ("grading" in validScopes) {
+                    payload.optJSONObject("grading")?.let { g ->
+                        val next = JSONObject(g.toString())
+                        for (uiKey in listOf("hasKey", "chatUrl", "providers", "clearKey")) next.remove(uiKey)
+                        if (next.optString("apiKey").isBlank() && existingGrading.optString("apiKey").isNotBlank()) {
+                            next.put("apiKey", existingGrading.getString("apiKey"))
+                        }
+                        rawSet("grading_settings", next.toString())
+                    }
+                }
+
+                configCache.clear()
+                cachedChild = null
+                db.setTransactionSuccessful()
+            } finally {
+                db.endTransaction()
+            }
+        }
+        if ("questions" in validScopes && !db.inTransaction()) pruneMedia()
+        val totalQ = readableDatabase.rawQuery("SELECT COUNT(*) FROM questions", null).use { if (it.moveToFirst()) it.getInt(0) else 0 }
+        return JSONObject()
+            .put("ok", true)
+            .put("scopes", JSONArray(validScopes.sorted()))
+            .put("mode", mode)
+            .put("children", children().length())
+            .put("questions", totalQ)
+            .put("syncedQuestions", syncedQuestions)
+    }
+
+    fun restoreBackup(backup: JSONObject, mode: String = "replace", scopes: Set<String>? = null): JSONObject {
+        if (scopes != null) return applyScopedSync(backup, scopes, mode)
         require(backup.optString("format") == "studyontv-backup") { "不是有效的题了个题备份文件" }
         require(mode in listOf("replace", "merge")) { "恢复模式仅支持 replace 或 merge" }
         val replace = mode == "replace"

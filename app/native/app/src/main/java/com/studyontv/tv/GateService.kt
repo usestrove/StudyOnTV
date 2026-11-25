@@ -710,6 +710,7 @@ class GateService : Service() {
         // #166：2GB 内存电视被强杀后重启时 IO 慢，先抢在任何数据库/磁盘操作前调用 startForeground，避免 5 秒超时崩掉
         enterForeground()
         DeviceRuntime.ensure(this)
+        PeerDiscovery.start(this, DeviceRuntime.store)
         UninstallGuard.restoreOwnerPolicy(this)
         overlay = GateOverlay(this, GateOverlay.applicationWindowType())
         instance = this
@@ -759,6 +760,7 @@ class GateService : Service() {
 
     override fun onDestroy() {
         try { DeviceRuntime.learning.flushUsage() } catch (_: Exception) { }
+        try { PeerDiscovery.stop() } catch (_: Exception) { }
         if (Prefs.onboarded(this)) scheduleRestart(this, 5000)
         handler.removeCallbacks(tick); handler.removeCallbacks(mediaTick)
         if (screenReceiverRegistered) {

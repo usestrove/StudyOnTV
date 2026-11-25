@@ -92,7 +92,7 @@ export function isAiPath(path: string) {
 export function defaultTimeout(path: string, method = 'GET') {
   if (path === '/api/questions/generate') return AI_GENERATE_TIMEOUT;
   if (path.startsWith('/api/grading/') || path.startsWith('/api/backup')) return AI_GRADING_TIMEOUT;
-  if (path === '/api/questions' && method.toUpperCase() === 'POST') return BULK_IO_TIMEOUT;
+  if (path === '/api/peers/sync' || (path === '/api/questions' && method.toUpperCase() === 'POST')) return BULK_IO_TIMEOUT;
   return LAN_TIMEOUT;
 }
 

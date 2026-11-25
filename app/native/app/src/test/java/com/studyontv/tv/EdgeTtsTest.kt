@@ -155,4 +155,25 @@ class EdgeTtsTest {
             "dGhlIHNhbXBsZSBub25jZQ=="
         )
     }
+
+    @Test
+    fun shouldRetryAfter403WhenCrossingFiveMinuteBoundaryEvenWithSmallSkew() {
+        // tBefore = ...399s 与 tAfter = ...400s 仅差 1 秒，但跨越了 300s 分桶边界，必须允许重试
+        val tBefore = 1_700_000_399_000L
+        val tAfter = 1_700_000_400_000L
+        assertTrue(EdgeTts.shouldRetryAfter403(tBefore, tAfter))
+        // 同一个 5 分钟桶内且偏差 < 60s，不重复等待
+        assertTrue(!EdgeTts.shouldRetryAfter403(1_700_000_110_000L, 1_700_000_120_000L))
+        // 无服务端 Date 不重试
+        assertTrue(!EdgeTts.shouldRetryAfter403(tBefore, null))
+    }
+
+    @Test
+    fun orderAddressesIpv4FirstPromotesIpv4AheadOfIpv6() {
+        val v6 = java.net.InetAddress.getByName("2620:1ec:33::10")
+        val v4a = java.net.InetAddress.getByName("204.79.197.200")
+        val v4b = java.net.InetAddress.getByName("13.107.21.200")
+        val ordered = EdgeTts.orderAddressesIpv4First(listOf(v6, v4a, v4b))
+        assertEquals(listOf(v4a, v4b, v6), ordered)
+    }
 }

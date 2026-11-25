@@ -1,7 +1,7 @@
 import {Component,useEffect,useRef,useState,lazy,Suspense,type ErrorInfo,type ReactNode} from 'react';
 import {root} from './react-root';
 import {QueryClient,QueryClientProvider,useQuery} from '@tanstack/react-query';
-import {AlertCircle,LoaderCircle,BookOpen,BookX,ClipboardCheck,SlidersHorizontal,ChartColumn,Leaf,LogOut,ArrowRight,LockKeyhole,Monitor,Settings,Sun,Moon,Laptop,ChevronsUpDown,Tv,Palette,KeyRound,CloudDownload,RadioTower,FileText,Bot,Eye,EyeOff,House,ShieldCheck,Users,Search,Volume2,X,RefreshCw} from 'lucide-react';
+import {AlertCircle,LoaderCircle,BookOpen,BookX,ClipboardCheck,SlidersHorizontal,ChartColumn,Leaf,LogOut,ArrowRight,ArrowLeftRight,LockKeyhole,Monitor,MonitorSmartphone,Settings,Sun,Moon,Laptop,ChevronsUpDown,Tv,Palette,KeyRound,CloudDownload,RadioTower,FileText,Bot,Eye,EyeOff,House,ShieldCheck,Users,Search,Volume2,X,RefreshCw} from 'lucide-react';
 import {Toaster,toast} from 'sonner';
 import {Button} from '@/components/ui/button';
 import {Dialog,DialogContent,DialogHeader,DialogTitle,DialogDescription} from '@/components/ui/dialog';
@@ -31,6 +31,7 @@ const QuestionBank=lazy(()=>import('./QuestionBank'));
 const WrongBookPage=lazy(()=>import('./WrongBookPage'));
 const GradingPage=lazy(()=>import('./GradingPage'));
 const RecordsPage=lazy(()=>import('./RecordsPage'));
+const DevicesPage=lazy(()=>import('./DevicesPage'));
 import './styles.css';
 
 const client=new QueryClient({defaultOptions:{queries:{retry:false,staleTime:3000,refetchOnWindowFocus:false},mutations:{retry:false}}});
@@ -64,7 +65,7 @@ class ErrorBoundary extends Component<{resetKey?:string;children:ReactNode},{err
  }
 }
 
-type PageId='remote'|'rules'|'bank'|'wrong'|'grading'|'records'|'settings';
+type PageId='remote'|'rules'|'bank'|'wrong'|'grading'|'records'|'devices'|'settings';
 const pages:{id:PageId,title:string,short:string,icon:any,description:string}[]=[
  {id:'remote',title:'首页',short:'首页',icon:House,description:'状态、学习模式与今日概览'},
  {id:'grading',title:'作答批改',short:'批改',icon:ClipboardCheck,description:'处理待批作业'},
@@ -72,6 +73,7 @@ const pages:{id:PageId,title:string,short:string,icon:any,description:string}[]=
  {id:'wrong',title:'错题库',short:'错题',icon:BookX,description:'错题沉淀、筛选与一键加练'},
  {id:'rules',title:'学习计划',short:'计划',icon:SlidersHorizontal,description:'背诵模式、范围、时段与奖励'},
  {id:'records',title:'学情与记录',short:'学情',icon:ChartColumn,description:'薄弱项诊断、记忆曲线与使用时长'},
+ {id:'devices',title:'多设备',short:'设备',icon:MonitorSmartphone,description:'局域网多设备发现、一键切换与批量同步'},
  {id:'settings',title:'设置',short:'设置',icon:Settings,description:'设备、备份、外观、更新与安全'}];
 type SectionId='device'|'children'|'keepalive'|'display'|'update'|'security'|'integration'|'logs'|'ai'|'speech';
 const sections:{id:SectionId,title:string,icon:any}[]=[{id:'device',title:'设备',icon:Tv},{id:'children',title:'孩子',icon:Users},{id:'speech',title:'朗读',icon:Volume2},{id:'keepalive',title:'后台保活',icon:ShieldCheck},{id:'display',title:'界面与反馈',icon:Palette},{id:'update',title:'版本更新',icon:CloudDownload},{id:'security',title:'管理密码',icon:KeyRound},{id:'integration',title:'家庭自动化',icon:RadioTower},{id:'logs',title:'诊断日志',icon:FileText},{id:'ai',title:'模型 API（高级）',icon:Bot}];
@@ -111,6 +113,8 @@ const searchEntries:SearchEntry[]=[
  {id:'wrong',page:'wrong',where:'错题库',title:'错题库与加练池管理',keywords:'错题 错题本 错题库 加练 加练池 清空 已掌握 复习'},
  {id:'grading',page:'grading',where:'作答批改',title:'待批改与 AI 批改',keywords:'批改 作业 待批 评分 ai 主观题 手写'},
  {id:'records',page:'records',where:'学情与记录',title:'学情诊断、顽固错题与记忆成熟度',keywords:'学情 记录 成长 统计 进度 正确率 时长 趋势 薄弱项 错题榜'},
+ {id:'devices',page:'devices',where:'多设备',title:'局域网多设备发现与一键切换',keywords:'多设备 局域网 发现 扫描 切换 电视 平板 收藏 添加 ip'},
+ {id:'devices-sync',page:'devices',where:'多设备 · 批量同步',title:'一键批量同步学习计划与题库',keywords:'同步 批量 多设备 题库 计划 朗读 ai 合并 覆盖'},
 ];
 const searchHits=(query:string,localOnly=false)=>{
  const q=query.trim().toLowerCase();
@@ -154,7 +158,7 @@ function ThemeSwitch({theme,setTheme}:{theme:Theme,setTheme:(t:Theme)=>void}){re
 function parseHash():{page:PageId,section:SectionId}{const [p,s]=location.hash.replace(/^#\/?/,'').split('/');return{page:(pages.some(x=>x.id===p)?p:'remote') as PageId,section:(sections.some(x=>x.id===s)?s:'device') as SectionId};}
 function useRoute(){const[route,set]=useState(parseHash);useEffect(()=>{const on=()=>{set(parseHash());window.scrollTo({top:0});};window.addEventListener('hashchange',on);return()=>window.removeEventListener('hashchange',on);},[]);return{...route,go:(page:PageId,section?:SectionId)=>{location.hash='/'+page+(section?'/'+section:'');}};}
 
-function App(){const[session,setSession]=useState(()=>restoreSession()?1:0),[next,setNext]=useState(2);const theme=useTheme();function logout(remote=true){if(remote)api('/api/logout','POST',{}).catch(()=>{});setToken('');forgetSession();setSession(0);client.clear();}useEffect(()=>{const handler=()=>{logout(false);toast.error('登录已失效，请重新验证管理密码');};window.addEventListener('session-expired',handler);return()=>window.removeEventListener('session-expired',handler);},[]);return <><Toaster richColors position="top-center" theme={theme.theme}/><InstallPrompt enabled={session!==0}/>{session?<Dashboard sessionId={session} logout={logout} theme={theme}/>:<Login onLogin={()=>{setSession(next);setNext(n=>n+1);}} theme={theme}/>}</>}
+function App(){const[session,setSession]=useState(()=>restoreSession()?1:0),[next,setNext]=useState(2);const theme=useTheme();function logout(remote=true){if(remote)api('/api/logout','POST',{}).catch(()=>{});setToken('');forgetSession();setSession(0);client.clear();}function switchHost(targetHost:string,name?:string){try{setHost(targetHost);setToken('');forgetSession();client.clear();setSession(0);toast.message(`已切换到 ${name||targetHost}，请输入管理密码登录`);}catch(e:any){toast.error(e?.message||'切换设备失败');}}useEffect(()=>{const handler=()=>{logout(false);toast.error('登录已失效，请重新验证管理密码');};window.addEventListener('session-expired',handler);return()=>window.removeEventListener('session-expired',handler);},[]);return <><Toaster richColors position="top-center" theme={theme.theme}/><InstallPrompt enabled={session!==0}/>{session?<Dashboard sessionId={session} logout={logout} onSwitchHost={switchHost} theme={theme}/>:<Login onLogin={()=>{setSession(next);setNext(n=>n+1);}} theme={theme}/>}</>}
 
 function Login({onLogin,theme}:{onLogin:()=>void,theme:ReturnType<typeof useTheme>}){
  const[host,updateHost]=useState(getHost()),[secret,setSecret]=useState(''),[busy,setBusy]=useState(false),[error,setError]=useState('');
@@ -242,17 +246,17 @@ function Login({onLogin,theme}:{onLogin:()=>void,theme:ReturnType<typeof useThem
 }
 
 function AppSidebar({page,go,pending,device,logout}:{page:PageId,go:(p:PageId)=>void,pending:number,device:any,logout:()=>void}){
- const groups:[string,PageId[]][]=[['学习',['remote','rules','bank','wrong','grading','records']],['系统',['settings']]];
+ const groups:[string,PageId[]][]=[['学习',['remote','rules','bank','wrong','grading','records']],['系统',['devices','settings']]];
  const {isMobile,setOpenMobile}=useSidebar();
  const navigate=(p:PageId)=>{go(p);if(isMobile)setOpenMobile(false);};
  return <Sidebar collapsible="icon" variant="sidebar">
-  <SidebarHeader><SidebarMenu><SidebarMenuItem><SidebarMenuButton size="lg" onClick={()=>navigate('remote')} tooltip="题了个题"><span className="brand-icon size-8"><Leaf className="size-4"/></span><div className="grid flex-1 text-start text-sm leading-tight"><span className="truncate font-semibold">题了个题</span><span className="truncate text-xs text-muted-foreground">家长管理</span></div></SidebarMenuButton></SidebarMenuItem></SidebarMenu></SidebarHeader>
+  <SidebarHeader><SidebarMenu><SidebarMenuItem><SidebarMenuButton size="lg" onClick={()=>navigate('remote')} tooltip="题了个题"><span className="brand-icon size-8"><Leaf className="size-4"/></span><div className="grid flex-1 text-start text-sm leading-tight"><span className="truncate font-semibold">题了个题</span><span className="truncate text-xs text-muted-foreground">家长管理</span></div></SidebarMenuButton></SidebarMenuItem><SidebarMenuItem><SidebarMenuButton size="sm" isActive={page==='devices'} onClick={()=>navigate('devices')} tooltip={`切换设备（当前：${device?.name||'被控设备'}）`} className="mt-1 text-xs text-muted-foreground"><ArrowLeftRight className="size-3.5 shrink-0"/><span className="truncate">{device?.name||'当前设备'}</span><span className="ms-auto shrink-0 text-[11px] opacity-75">切换</span></SidebarMenuButton></SidebarMenuItem></SidebarMenu></SidebarHeader>
   <SidebarContent>{groups.map(([label,ids])=><SidebarGroup key={label}><SidebarGroupLabel>{label}</SidebarGroupLabel><SidebarMenu>{ids.map(id=>{const p=pages.find(x=>x.id===id)!;return <SidebarMenuItem key={id}><SidebarMenuButton isActive={page===id} tooltip={p.title} onClick={()=>navigate(id)}><p.icon/><span>{p.title}</span></SidebarMenuButton>{id==='grading'&&pending>0&&<SidebarMenuBadge>{pending}</SidebarMenuBadge>}</SidebarMenuItem>;})}</SidebarMenu></SidebarGroup>)}</SidebarContent>
   <SidebarFooter><SidebarMenu><SidebarMenuItem><DeviceMenu device={device} logout={logout} side="right"><SidebarMenuButton size="lg" className="data-[state=open]:bg-sidebar-accent"><span className="flex size-8 items-center justify-center text-muted-foreground"><Tv className="size-[18px]"/></span><div className="grid flex-1 text-start text-sm leading-tight"><span className="truncate font-semibold">{device?.name||'被控设备'}</span><span className="truncate text-xs text-muted-foreground"><span className="me-1.5 inline-block size-1.5 rounded-full bg-emerald-500"/>{getHost()}</span></div><ChevronsUpDown className="ms-auto size-4"/></SidebarMenuButton></DeviceMenu></SidebarMenuItem></SidebarMenu></SidebarFooter>
   <SidebarRail/>
  </Sidebar>;}
 
-function DeviceMenu({device,logout,children,side='bottom'}:{device:any,logout:()=>void,children:ReactNode,side?:'right'|'bottom'}){return <DropdownMenu modal={false}><DropdownMenuTrigger asChild>{children}</DropdownMenuTrigger><DropdownMenuContent className="min-w-56 rounded-lg" side={side} align="end" sideOffset={4}><DropdownMenuLabel className="font-normal"><div className="grid text-sm leading-tight"><span className="font-semibold">{device?.name||'被控设备'}</span><span className="text-xs text-muted-foreground">{device?`${device.flavor==='tv'?'电视版':'手机 / 平板版'} v${device.version}`:getHost()}</span></div></DropdownMenuLabel><DropdownMenuSeparator/><DropdownMenuItem onClick={()=>{location.hash='/settings/device';}}><Settings/>设备设置</DropdownMenuItem><DropdownMenuItem onClick={logout} variant="destructive"><LogOut/>断开并重新连接</DropdownMenuItem></DropdownMenuContent></DropdownMenu>;}
+function DeviceMenu({device,logout,children,side='bottom'}:{device:any,logout:()=>void,children:ReactNode,side?:'right'|'bottom'}){return <DropdownMenu modal={false}><DropdownMenuTrigger asChild>{children}</DropdownMenuTrigger><DropdownMenuContent className="min-w-56 rounded-lg" side={side} align="end" sideOffset={4}><DropdownMenuLabel className="font-normal"><div className="grid text-sm leading-tight"><span className="font-semibold">{device?.name||'被控设备'}</span><span className="text-xs text-muted-foreground">{device?`${device.flavor==='tv'?'电视版':'手机 / 平板版'} v${device.version}`:getHost()}</span></div></DropdownMenuLabel><DropdownMenuSeparator/><DropdownMenuItem onClick={()=>{location.hash='/devices';}}><MonitorSmartphone/>多设备管理与同步</DropdownMenuItem><DropdownMenuItem onClick={()=>{location.hash='/settings/device';}}><Settings/>设备设置</DropdownMenuItem><DropdownMenuItem onClick={logout} variant="destructive"><LogOut/>断开并重新连接</DropdownMenuItem></DropdownMenuContent></DropdownMenu>;}
 
 function Header({title,children}:{title:string,children:ReactNode}){
  const isMobile=useIsMobile();
@@ -299,7 +303,7 @@ function GlobalSearch({go,localOnly}:{go:(p:PageId,s?:SectionId)=>void,localOnly
   </Dialog>
  </>;}
 
-function Dashboard({sessionId,logout,theme}:{sessionId:number,logout:()=>void,theme:ReturnType<typeof useTheme>}){
+function Dashboard({sessionId,logout,onSwitchHost,theme}:{sessionId:number,logout:()=>void,onSwitchHost:(host:string,name?:string)=>void,theme:ReturnType<typeof useTheme>}){
  const isMobile=useIsMobile();
  const{page,section,go}=useRoute();
  const state=useQuery({queryKey:['state',sessionId],queryFn:()=>api('/api/state'),refetchInterval:5000});
@@ -360,6 +364,7 @@ function Dashboard({sessionId,logout,theme}:{sessionId:number,logout:()=>void,th
       {page==='wrong'&&<WrongBookPage sessionId={sessionId} state={state.data}/>}
       {page==='grading'&&<GradingPage sessionId={sessionId}/>}
       {page==='records'&&<RecordsPage sessionId={sessionId}/>}
+      {page==='devices'&&<DevicesPage sessionId={sessionId} device={device.data} questionCount={state.data?.questions} onSwitchHost={onSwitchHost}/>}
      </Suspense>
      {page==='settings'&&<SettingsPage section={section} go={go} sessionId={sessionId} state={state.data} logout={logout} localOnly={localOnly}/>}
     </ErrorBoundary>
