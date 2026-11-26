@@ -559,7 +559,9 @@ export default function DevicePanel({
     silentCapability === 'device_owner' || silentCapability === 'self_update';
   const apkReady = Boolean(updateInfo?.hasUpdate && updateInfo?.apkReady);
   const readyVersion = String(updateInfo?.downloadedVersion || updateInfo?.latest || '');
-  const failedSources = ((updateInfo?.log || []) as any[]).filter(item => item && !item.ok);
+  const failedSources = ((updateInfo?.log || []) as any[]).filter(
+    item => item && !item.ok && !String(item.message || '').includes('已是最新版本'),
+  );
   const latestVer = updateInfo?.latest || '新版';
   const apkName =
     device.data?.flavor === 'tv'

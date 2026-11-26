@@ -19,6 +19,9 @@
 
 ---
 
+[English](./README.en.md) · [Tiếng Việt](./README.vi.md)
+
+
 ## 安装
 
 Android 平板、手机和电视使用同一套规则，分别安装对应版本：

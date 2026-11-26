@@ -243,7 +243,7 @@ export function Row({
         <div className="text-sm font-medium">{title}</div>
         {note && <div className="mt-1 text-xs leading-5 text-muted-foreground">{note}</div>}
       </div>
-      {children != null && <div className="min-w-0">{children}</div>}
+      {children != null && <div className="shrink-0 min-w-0">{children}</div>}
     </div>
   );
 }

@@ -213,4 +213,22 @@ class UpdaterTest {
         assertEquals("installing", afterRace2.state)
         assertTrue(afterRace2.message.contains("确认安装"))
     }
+
+    @Test
+    fun validateSignatureSetsAllowsMatchAndEmptyRomFallbackRejectsMismatch() {
+        val certA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        val certB = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+
+        // Exact match passes
+        assertNull(ApkInstaller.validateSignatureSets(setOf(certA), setOf(certA)))
+        // Overlapping multi-signer / key rotation history passes
+        assertNull(ApkInstaller.validateSignatureSets(setOf(certA, certB), setOf(certB)))
+        // Genuine mismatch when both sides parsed certificates must be rejected
+        val mismatch = ApkInstaller.validateSignatureSets(setOf(certA), setOf(certB))
+        assertTrue(mismatch != null && mismatch.contains("安装包签名与当前版本不一致"))
+        // Android 9/10 ROM bug: archive signature parse returns empty -> defer to OS PackageInstaller instead of false rejection
+        assertNull(ApkInstaller.validateSignatureSets(setOf(certA), emptySet()))
+        assertNull(ApkInstaller.validateSignatureSets(emptySet(), setOf(certA)))
+        assertNull(ApkInstaller.validateSignatureSets(emptySet(), emptySet()))
+    }
 }

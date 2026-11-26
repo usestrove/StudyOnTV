@@ -24,7 +24,7 @@
       <div class="options" id="qOptions"></div>
       <div class="pool-status" id="qPool"></div>
       <div class="feedback" id="qFeedback" role="status" aria-live="polite"><div class="fb-icon" id="fbIcon"></div><div class="fb-body"><div class="fb-title" id="fbTitle"></div><div class="fb-answer" id="fbAnswer"></div><div class="fb-tip" id="fbTip"></div></div><div class="fb-actions"><button class="btn btn-ghost focusable fb-read-btn" id="fbReadAloud" data-action="read-aloud" style="display:none">朗读</button><button class="btn btn-primary focusable" id="fbNext" data-action="next">继续</button></div></div>
-      <div class="quiz-foot"><div class="dots-progress" id="qDots"></div><div class="quiz-foot-right"><button class="btn btn-ghost focusable read-aloud-btn" id="readAloudBtn" data-action="read-aloud" style="display:none">朗读</button><div class="hint"><span class="kbd">◀ ▶ ▲ ▼</span><span class="hint-text">选择</span><span class="kbd">OK</span><span class="hint-text">确认</span><span class="kbd">返回</span><span class="hint-text">回到桌面</span></div></div></div>
+      <div class="quiz-foot"><div class="dots-progress" id="qDots"></div><div class="quiz-foot-right"><button class="btn btn-ghost focusable" id="quizBackHubBtn" data-action="back-hub" style="display:none">返回学习中心</button><button class="btn btn-ghost focusable read-aloud-btn" id="readAloudBtn" data-action="read-aloud" style="display:none">朗读</button><div class="hint"><span class="kbd">◀ ▶ ▲ ▼</span><span class="hint-text">选择</span><span class="kbd">OK</span><span class="hint-text">确认</span><span class="kbd">返回</span><span class="hint-text">回到桌面</span></div></div></div>
     </div>
   </section>
   <section class="screen" id="screen-hub">
@@ -92,7 +92,7 @@
   <div class="pin-dialog">
     <h2 class="pin-title" id="pinTitle">输入切换密码</h2>
     <p class="pin-sub" id="pinSub">请输入该孩子的切换密码（也可输入家长密码）</p>
-    <input class="pin-input" id="pinInput" type="password" inputmode="numeric" maxlength="20" autocomplete="off" placeholder="请输入密码">
+    <input class="pin-input" id="pinInput" type="password" inputmode="none" readonly maxlength="20" autocomplete="off" placeholder="请点击下方数字输入密码">
     <div class="pin-error" id="pinError" role="alert"></div>
     <div class="pin-pad" id="pinPad">
       <button class="btn btn-ghost focusable pin-key" data-action="pin-digit" data-digit="1">1</button>

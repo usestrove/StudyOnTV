@@ -428,7 +428,7 @@ object Updater {
         var info: Info? = null
         try {
             info = Pgyer.info(ctx, current, currentVersionCode(ctx))
-            log.put(JSONObject().put("source", "蒲公英").put("ok", info != null).put("ms", System.currentTimeMillis() - started)
+            log.put(JSONObject().put("source", "蒲公英").put("ok", true).put("ms", System.currentTimeMillis() - started)
                 .put("message", if (info == null) "当前已是最新版本" else "v" + info.latest))
         } catch (e: Exception) {
             Diag.error("Update", "Pgyer check failed", e)

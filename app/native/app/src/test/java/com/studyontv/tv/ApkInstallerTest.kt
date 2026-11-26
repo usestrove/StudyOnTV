@@ -26,4 +26,23 @@ class ApkInstallerTest {
         assertTrue(blocked!!.contains("EU Local-Only"))
         assertNull(ApkInstaller.checkLocalOnlyBlocked(localOnly = false))
     }
+
+    @Test
+    fun signatureVerdictAcceptsMatchingCertsAndRejectsDifferentOnes() {
+        assertNull(ApkInstaller.signatureVerdict(setOf("aa"), setOf("aa")))
+        // 证书轮换：历史证书之一命中即可
+        assertNull(ApkInstaller.signatureVerdict(setOf("new", "old"), setOf("old")))
+
+        val rejected = ApkInstaller.signatureVerdict(setOf("aa"), setOf("bb"))
+        assertNotNull(rejected)
+        assertTrue(rejected!!.contains("签名"))
+    }
+
+    @Test
+    fun signatureVerdictDefersToSystemInstallerWhenCertsAreUnreadable() {
+        // 部分电视 ROM 对 APK 归档读不到证书；此时不能提前拒绝，交给系统安装器做最终校验
+        assertNull(ApkInstaller.signatureVerdict(setOf("aa"), emptySet()))
+        assertNull(ApkInstaller.signatureVerdict(emptySet(), setOf("aa")))
+        assertNull(ApkInstaller.signatureVerdict(emptySet(), emptySet()))
+    }
 }

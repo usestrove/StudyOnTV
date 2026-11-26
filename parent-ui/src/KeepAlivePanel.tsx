@@ -74,7 +74,7 @@ export default function KeepAlivePanel({sessionId}:{sessionId:number}){
    {checks.map(check=>{
     const style=LEVEL[check.level],Icon=style.icon;
     return <Row key={check.id} title={check.title} note={check.detail}>
-     <span className={`inline-flex items-center gap-1.5 text-sm ${style.className}`}><Icon className="size-4"/>{style.label}</span>
+     <span className={`inline-flex shrink-0 whitespace-nowrap items-center gap-1.5 text-sm ${style.className}`}><Icon className="size-4 shrink-0"/>{style.label}</span>
     </Row>;
    })}
 

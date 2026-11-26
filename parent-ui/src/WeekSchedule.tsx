@@ -66,8 +66,12 @@ export default function WeekSchedule({
 }) {
   const isControlMode = scheduleMode === 'control';
   const isMobile = useIsMobile();
+  const isCoarsePointer =
+    typeof window !== 'undefined' &&
+    typeof window.matchMedia === 'function' &&
+    window.matchMedia('(pointer: coarse)').matches;
   const [layoutOverride, setLayoutOverride] = useState<'vertical' | 'horizontal' | null>(null);
-  const isVertical = layoutOverride ? layoutOverride === 'vertical' : isMobile;
+  const isVertical = layoutOverride ? layoutOverride === 'vertical' : isMobile || isCoarsePointer;
   const [dragPaint, setDragPaint] = useState(false);
 
   const paint = useRef<string | null>(null);

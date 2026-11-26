@@ -267,9 +267,9 @@ function BottomNav({page,go,pending}:{page:PageId,go:(p:PageId)=>void,pending:nu
 function SettingsPage({section,go,sessionId,state,logout,localOnly}:{section:SectionId,go:(p:PageId,s:SectionId)=>void,sessionId:number,state:any,logout:()=>void,localOnly:boolean}){
  const visibleSections=localOnly?sections.filter(s=>s.id!=='update'):sections;
  const activeSection:SectionId=localOnly&&section==='update'?'device':section;
- return <Tabs value={activeSection} orientation="vertical" onValueChange={value=>go('settings',value as SectionId)} className="gap-4 lg:grid lg:grid-cols-[14rem_minmax(0,1fr)] lg:items-start lg:gap-6">
-  <TabsList aria-label="设置分区" className="sticky top-10 z-20 -mx-4 flex w-[calc(100%+2rem)] flex-nowrap justify-start gap-1 overflow-x-auto bg-background/95 px-3 py-2 backdrop-blur lg:static lg:mx-0 lg:block lg:w-full lg:space-y-1 lg:overflow-visible lg:bg-transparent lg:px-0 lg:py-0 lg:backdrop-blur-none">
-   {visibleSections.map(s=><TabsTrigger key={s.id} value={s.id} className="shrink-0 whitespace-nowrap justify-start gap-2 px-3 max-[520px]:px-2.5 max-[520px]:text-xs lg:flex lg:w-full lg:justify-start"><s.icon/>{s.title}</TabsTrigger>)}
+ return <Tabs value={activeSection} orientation="vertical" onValueChange={value=>go('settings',value as SectionId)} className="gap-4 xl:grid xl:grid-cols-[13.5rem_minmax(0,1fr)] xl:items-start xl:gap-6">
+  <TabsList aria-label="设置分区" className="sticky top-10 z-20 -mx-4 flex w-[calc(100%+2rem)] flex-nowrap justify-start gap-1 overflow-x-auto bg-background/95 px-3 py-2 backdrop-blur xl:sticky xl:top-14 xl:mx-0 xl:block xl:w-full xl:space-y-1 xl:overflow-visible xl:bg-transparent xl:px-0 xl:py-0 xl:backdrop-blur-none">
+   {visibleSections.map(s=><TabsTrigger key={s.id} value={s.id} className="shrink-0 whitespace-nowrap justify-start gap-2 px-3 max-[520px]:px-2.5 max-[520px]:text-xs xl:flex xl:w-full xl:justify-start"><s.icon/>{s.title}</TabsTrigger>)}
   </TabsList>
   <TabsContent value={activeSection} className="m-0 w-full min-w-0">{activeSection==='children'?<ChildrenPanel sessionId={sessionId}/>:activeSection==='speech'?<SpeechSettings sessionId={sessionId}/>:activeSection==='keepalive'?<KeepAlivePanel sessionId={sessionId}/>:activeSection==='display'?<FeedbackPanel state={state} sessionId={sessionId}/>:activeSection==='logs'?<LogsPage sessionId={sessionId}/>:activeSection==='ai'?<AiSettings sessionId={sessionId}/>:<DevicePanel sessionId={sessionId} only={activeSection} onPasswordChanged={logout} onOpenKeepAlive={()=>go('settings','keepalive')}/>}</TabsContent>
  </Tabs>;}

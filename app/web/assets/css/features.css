@@ -408,3 +408,13 @@ html:not(.tv-device) .pin-key-fn { font-size: 14px !important; }
 html:not(.tv-device) .pin-actions > * { margin: 0 5px; }
 html:not(.tv-device) .pin-actions > *:first-child { margin-left: 0; }
 html:not(.tv-device) .pin-actions > *:last-child { margin-right: 0; }
+
+/* QA 增强：孩子切换胶囊触控高度 >= 44px，电视/键盘焦点框高对比可见（含白底激活态） */
+.hub-child { min-height: 44px; padding-top: 8px; padding-bottom: 8px; }
+.hub-child.focused,
+.hub-card.focused,
+.pin-key.focused {
+  outline: 3px solid #FFB020;
+  outline-offset: 2px;
+  box-shadow: 0 0 0 5px rgba(255, 176, 32, .32);
+}

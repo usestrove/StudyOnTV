@@ -149,7 +149,7 @@ export default function SpeechSettings({sessionId}:{sessionId:number}){
      <ItemActions><Switch aria-label="自动朗读题目" checked={!!form.autoRead} onCheckedChange={value=>change('autoRead',value)}/></ItemActions>
     </Item>
     <Item size="sm" className="rounded-none px-0 py-4" id="setting-read-scope" data-invalid={!!errors.readScope}>
-     <ItemContent><ItemTitle>朗读内容</ItemTitle><ItemDescription className="text-xs">选「和答案」时，答案在作答之后再读，作答前不会剧透。</ItemDescription><FieldError>{errors.readScope}</FieldError></ItemContent>
+     <ItemContent><ItemTitle>朗读内容</ItemTitle><ItemDescription className="text-xs">选「和答案」时，答案在作答之后再读，作答前不会剧透；开启自动朗读时，有解析的题目在作答或翻面后也会自动朗读解析。</ItemDescription><FieldError>{errors.readScope}</FieldError></ItemContent>
      <ItemActions>
       <Select value={readScopeValue(form.readScope)} onValueChange={value=>change('readScope',value)}>
        <SelectTrigger aria-label="朗读内容" aria-invalid={!!errors.readScope} className="w-full sm:w-44"><SelectValue>{readScopes.find(([value])=>value===readScopeValue(form.readScope))?.[1]}</SelectValue></SelectTrigger>
