@@ -57,6 +57,8 @@ object DeviceRuntime {
         }
         // 体验提升计划：按间隔自动在后台上报运行诊断日志
         Diag.uploadRuntimeLogsIfDue(app)
+        // 后台静默检查更新并预下载安装包（EU Local-Only 内部直接跳过）
+        Updater.check(app) { }
     }
 
     fun connection(context: Context): org.json.JSONObject {

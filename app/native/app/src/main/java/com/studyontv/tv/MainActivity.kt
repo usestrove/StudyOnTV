@@ -10,9 +10,10 @@ import android.view.WindowManager
 import android.webkit.WebView
 
 open class MainActivity : Activity() {
-    protected lateinit var web: WebView
+    protected var web: WebView? = null
     private var webReleased = false
     private var page = "quiz"
+    private val mainHandler by lazy { android.os.Handler(android.os.Looper.getMainLooper()) }
     private val remote = RemoteKeys { startActivity(Intent(this, ParentActivity::class.java)) }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -35,7 +36,7 @@ open class MainActivity : Activity() {
         createWeb()
         GateService.ensureRunning(this, "app")
         // #166：2GB 电视进程重建时若首次拉起前台服务被系统延迟/拒绝，3 秒后补试一次
-        web.postDelayed({ if (!isFinishing && !isDestroyed && Prefs.onboarded(this)) GateService.ensureRunning(this, "app-retry") }, 3000)
+        mainHandler.postDelayed({ if (!isFinishing && !isDestroyed && Prefs.onboarded(this)) GateService.ensureRunning(this, "app-retry") }, 3000)
     }
 
     /**
@@ -97,24 +98,57 @@ open class MainActivity : Activity() {
             .show()
     }
 
-    private fun checkUpdate() {
-        if (this is GateActivity) return
-        Updater.check(this) { info ->
-            val newer = Updater.newerThanCurrent(this, info) ?: return@check
-            runOnUiThread {
-                if (isFinishing || isDestroyed) return@runOnUiThread
-                val raw = DeviceBridge(this).updateInfo()
-                if (newer.force) startActivity(Intent(this, UpdateActivity::class.java).putExtra("payload", raw))
-                else if (::web.isInitialized && !webReleased) web.evaluateJavascript("window.SOTV_UPDATE&&SOTV_UPDATE($raw)", null)
+    private val onApkReady: (Updater.Info) -> Unit = { info ->
+        if (this !is GateActivity) {
+            val newer = Updater.newerThanCurrent(this, info)
+            if (newer != null) pushUpdatePrompt(newer)
+        }
+    }
+
+    private fun pushUpdatePrompt(newer: Updater.Info) {
+        val autoDownload = Updater.resolveAutoDownloadSetting(Prefs.autoDownloadUpdate(this), LocalOnlyGuard.enabled)
+        val ready = Updater.isApkReady(this, newer)
+        if (!Updater.shouldPromptOnDevice(autoDownload, ready, newer.force)) return
+        runOnUiThread {
+            if (isFinishing || isDestroyed) return@runOnUiThread
+            val raw = DeviceBridge(this).updateInfo()
+            if (raw.isEmpty()) return@runOnUiThread
+            if (newer.force) {
+                val intent = Intent(this, UpdateActivity::class.java).putExtra("payload", raw)
+                if (ready) intent.putExtra("apkPath", ApkInstaller.apkFile(this).absolutePath)
+                startActivity(intent)
+            } else {
+                val view = if (!webReleased) web else null
+                view?.evaluateJavascript("window.SOTV_UPDATE&&SOTV_UPDATE($raw)", null)
             }
         }
     }
 
+    private fun checkUpdate() {
+        if (this is GateActivity) return
+        Updater.check(this) { info ->
+            val newer = Updater.newerThanCurrent(this, info) ?: return@check
+            pushUpdatePrompt(newer)
+        }
+    }
+
     private fun createWeb() {
-        web = WebShell(this).create(Prefs.localBase(this) + "#/$page")
-        web.addJavascriptInterface(DeviceBridge(this, false, web), "SOTVNative")
-        setContentView(web)
-        web.requestFocus()
+        val created = WebShell(this).createOrNull(Prefs.localBase(this) + "#/$page")
+        if (created == null) {
+            web = null
+            webReleased = true
+            setContentView(WebShell.buildUnavailableView(
+                context = this,
+                title = "当前设备缺少系统 WebView",
+                onRetry = { createWeb() },
+                onExit = { finish() }
+            ))
+            return
+        }
+        web = created
+        created.addJavascriptInterface(DeviceBridge(this, false, created), "SOTVNative")
+        setContentView(created)
+        created.requestFocus()
         webReleased = false
     }
 
@@ -126,9 +160,11 @@ open class MainActivity : Activity() {
         // TvTextInputActivity / InputSupport 会把结果写回当前 WebView，destroy() 后 JS 上下文消失，
         // 重投全部落在死实例上，表现为「点确定回到题目还是空的」（#64 / #77 / #80 / #84）。
         val awaitingInput = InputSupport.active || AnswerInput.active
-        if (DeviceBridge.isTv(this) && ::web.isInitialized && !webReleased && !awaitingInput) {
-            (web.parent as? android.view.ViewGroup)?.removeView(web)
-            web.destroy()
+        val current = web
+        if (DeviceBridge.isTv(this) && current != null && !webReleased && !awaitingInput) {
+            (current.parent as? android.view.ViewGroup)?.removeView(current)
+            current.destroy()
+            web = null
             webReleased = true
         }
     }
@@ -138,31 +174,39 @@ open class MainActivity : Activity() {
         setIntent(intent)
         val reason = intent?.getStringExtra("reason")
         page = if (this is GateActivity && reason != null) gateLearningPage(reason) else "quiz"
-        if (::web.isInitialized && !webReleased) {
-            web.loadUrl(Prefs.localBase(this) + "#/$page")
-            web.evaluateJavascript("window.SOTV_RESUME&&SOTV_RESUME()", null)
+        val current = if (!webReleased) web else null
+        if (current != null) {
+            current.loadUrl(Prefs.localBase(this) + "#/$page")
+            current.evaluateJavascript("window.SOTV_RESUME&&SOTV_RESUME()", null)
         }
     }
 
     override fun onPause() {
         super.onPause()
-        if (::web.isInitialized && !webReleased) web.onPause()
+        Updater.removeApkReadyListener(onApkReady)
+        if (!webReleased) {
+            web?.evaluateJavascript("window.SOTV_PAUSE&&SOTV_PAUSE()", null)
+            web?.onPause()
+        }
     }
 
     override fun onResume() {
         super.onResume()
-        if (::web.isInitialized && !webReleased) web.onResume()
+        if (!webReleased) web?.onResume()
         // 前台重试一次遗留静音恢复（非前台时系统可能拦截音量写入）。
         MediaPause.recover(this)
         if (Prefs.onboarded(this)) GateService.ensureRunning(this, "app")
         if (this is GateActivity && !DeviceRuntime.learning.status().optBoolean("free")) MediaPause.pause(this)
         if (webReleased) createWeb()
+        if (this !is GateActivity) Updater.addApkReadyListener(onApkReady)
         checkUpdate()
-        if (::web.isInitialized && !webReleased) web.evaluateJavascript("window.SOTV_RESUME&&SOTV_RESUME()", null)
+        if (!webReleased) web?.evaluateJavascript("window.SOTV_RESUME&&SOTV_RESUME()", null)
     }
 
-    fun showNavigationBlocked(): Boolean =
-        if (::web.isInitialized && !webReleased) LearningNavigation.showBlockedNotice(web) else false
+    fun showNavigationBlocked(): Boolean {
+        val current = if (!webReleased) web else null
+        return if (current != null) LearningNavigation.showBlockedNotice(current) else false
+    }
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         // #143：创维 A5D Pro / 酷开开启「强制使用全屏学习页」后，遥控器关机键被全屏页吞掉。
@@ -177,16 +221,18 @@ open class MainActivity : Activity() {
         }
         // 手机 / 平板把方向键和回车交给网页输入框，仅拦截返回键给 window.TV.back()
         if (!DeviceBridge.isTv(this) && event.keyCode != KeyEvent.KEYCODE_BACK) return super.dispatchKeyEvent(event)
-        val view = if (::web.isInitialized && !webReleased) web else null
+        val view = if (!webReleased) web else null
         return remote.handle(view, event) || super.dispatchKeyEvent(event)
     }
 
     override fun onDestroy() {
         crashDialog?.dismiss()
         crashDialog = null
-        if (::web.isInitialized && !webReleased) {
-            (web.parent as? android.view.ViewGroup)?.removeView(web)
-            web.destroy()
+        val current = web
+        if (current != null && !webReleased) {
+            (current.parent as? android.view.ViewGroup)?.removeView(current)
+            current.destroy()
+            web = null
             webReleased = true
         }
         super.onDestroy()

@@ -54,8 +54,8 @@ object Prefs {
     fun updateInstallError(c: Context): String = sp(c).getString("update_install_error", "") ?: ""
     fun setUpdateInstallError(c: Context, v: String) = sp(c).edit().putString("update_install_error", v).apply()
 
-    /** 是否在发现新版本时后台自动静默预下载更新包（默认关闭，EU Local-Only 恒为 false） */
-    fun autoDownloadUpdate(c: Context): Boolean = sp(c).getBoolean("auto_download_update", false)
+    /** 是否在发现新版本时后台自动静默预下载更新包（默认开启，EU Local-Only 恒为 false） */
+    fun autoDownloadUpdate(c: Context): Boolean = sp(c).getBoolean("auto_download_update", true)
     fun setAutoDownloadUpdate(c: Context, v: Boolean) = sp(c).edit().putBoolean("auto_download_update", v).apply()
 
     /** 已在本地完成校验就绪的预下载 APK 版本号与 SHA-256 */

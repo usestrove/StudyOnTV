@@ -32,7 +32,7 @@
 {"action": "unlock", "minutes": 30}
 ```
 
-- `unlock`：临时解锁 1–1440 分钟，不扣学习余额，到点自动恢复规则；
+- `unlock`：临时解锁 1–1440 分钟，不扣学习余额，到点自动恢复规则；也可使用 `{"action":"unlock","untilShutdown":true}` 解锁到本次关机，此时 `minutes` 必须省略或为 0。真正关机、重启或断电后的下次启动自动恢复规则；待机、熄屏、应用重启仍保持解锁，可随时 `cancel`。设备无法可靠读取开机计数时会拒绝此模式，应改用定时解锁。状态中 `override.untilShutdown=true`、`remainingSeconds=-1` 表示到本次关机，不能将其显示成剩余 0 分钟或永久关闭管控；
 - `lock`：立即暂停，`minutes` 为 0 表示一直暂停到手动取消（最多 7 天）；
 - `cancel`：取消当前的临时解锁或暂停。
 - `indefinite`：持续关闭管控，直到手动取消。

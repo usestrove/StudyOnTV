@@ -40,6 +40,12 @@ public class JSONArray {
     public JSONArray put(int value) { list.add(value); return this; }
     public JSONArray put(long value) { list.add(value); return this; }
     public JSONArray put(Object value) { list.add(JsonCodec.wrap(value)); return this; }
+    public JSONArray put(int index, Object value) throws JSONException {
+        if (index < 0) throw new JSONException("Negative index: " + index);
+        while (list.size() <= index) list.add(JSONObject.NULL);
+        list.set(index, JsonCodec.wrap(value));
+        return this;
+    }
 
     public Object opt(int index) {
         return (index < 0 || index >= list.size()) ? null : list.get(index);

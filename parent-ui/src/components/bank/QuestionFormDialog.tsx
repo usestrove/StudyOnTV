@@ -1,15 +1,16 @@
 import { useRef, useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { Check, ImagePlus, Link2, Plus, Upload, X } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Field as UiField, FieldDescription, FieldGroup } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
-import { api, resolveMediaUrl } from '@/api';
+import { api } from '@/api';
 import { ChoiceSelect, Field, labels, questionImages } from './shared';
-import { compressImageFile, formatImageHint } from './imageUtils';
+import { compressImageFile } from './question-image';
+import QuestionImageField from './QuestionImageField';
+import QuestionOptionsEditor from './QuestionOptionsEditor';
 import RichStemEditor from './RichStemEditor';
 import type { BankMeta } from './QuestionFilters';
 
@@ -30,12 +31,8 @@ export default function QuestionFormDialog({ initial, meta, onClose, onSaved }: 
       ? initial.optionImages
       : (initial.opts || []).map(() => ''),
   }));
-  const [urlInput, setUrlInput] = useState('');
-  const [showUrlInput, setShowUrlInput] = useState(false);
   const [uploading, setUploading] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
-  const optFileRef = useRef<HTMLInputElement>(null);
-  const optTargetRef = useRef<number>(0);
 
   const save = useMutation({
     mutationFn: (body: any) => api('/api/questions', 'POST', body),
@@ -81,26 +78,11 @@ export default function QuestionFormDialog({ initial, meta, onClose, onSaved }: 
     }
   }
 
-  function addImageUrl() {
-    const u = urlInput.trim();
-    if (!u) return;
-    if (!/^(\/api\/media\/.+|https?:\/\/.+)/.test(u)) {
-      toast.error('请输入 http://、https:// 或 /api/media/ 开头的图片地址');
-      return;
-    }
-    const current: string[] = form.images || [];
-    if (current.length >= MAX_IMAGES) {
-      toast.error(`每道题最多支持 ${MAX_IMAGES} 张配图`);
-      return;
-    }
-    if (current.includes(u)) {
-      toast.info('这张图片已在列表中');
-      return;
-    }
-    const next = [...current, u];
-    setForm((f: any) => ({ ...f, images: next, image: next[0] || '' }));
-    setUrlInput('');
-    setShowUrlInput(false);
+  function addImageUrl(url: string) {
+    setForm((f: any) => {
+      const next = [...(f.images || []), url];
+      return { ...f, images: next, image: next[0] || '' };
+    });
   }
 
   function removeImage(index: number) {
@@ -124,7 +106,6 @@ export default function QuestionFormDialog({ initial, meta, onClose, onSaved }: 
       toast.error(e?.message || '选项配图处理失败');
     } finally {
       setUploading(false);
-      if (optFileRef.current) optFileRef.current.value = '';
     }
   }
 
@@ -134,15 +115,6 @@ export default function QuestionFormDialog({ initial, meta, onClose, onSaved }: 
       next[index] = '';
       return { ...f, optionImages: next };
     });
-  }
-
-  function handleDropImages(e: React.DragEvent) {
-    e.preventDefault();
-    if (uploading) return;
-    const list = Array.from(e.dataTransfer.files || []).filter(
-      f => f.type.startsWith('image/') || /\.(heic|heif)$/i.test(f.name || ''),
-    );
-    if (list.length) void addImageFiles(list);
   }
 
   function submit() {
@@ -235,188 +207,27 @@ export default function QuestionFormDialog({ initial, meta, onClose, onSaved }: 
               />
             </UiField>
 
-            <UiField onDragOver={e => e.preventDefault()} onDrop={handleDropImages}>
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <label className="text-sm font-medium">题目配图（可选，最多 {MAX_IMAGES} 张）</label>
-                <div className="flex items-center gap-1.5">
-                  <input
-                    ref={fileRef}
-                    type="file"
-                    accept="image/*"
-                    multiple
-                    className="hidden"
-                    onChange={e => {
-                      const list = Array.from(e.target.files || []);
-                      if (list.length) void addImageFiles(list);
-                    }}
-                  />
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="outline"
-                    disabled={uploading || images.length >= MAX_IMAGES}
-                    onClick={() => fileRef.current?.click()}
-                  >
-                    <Upload className="size-3.5" />
-                    {uploading ? '压缩中…' : '上传图片'}
-                  </Button>
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="ghost"
-                    disabled={images.length >= MAX_IMAGES}
-                    onClick={() => setShowUrlInput(v => !v)}
-                  >
-                    <Link2 className="size-3.5" />
-                    图片链接
-                  </Button>
-                </div>
-              </div>
-              {showUrlInput && (
-                <div className="mt-2 flex gap-2">
-                  <Input
-                    value={urlInput}
-                    onChange={e => setUrlInput(e.target.value)}
-                    placeholder="https://example.com/diagram.png"
-                    onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); addImageUrl(); } }}
-                  />
-                  <Button type="button" size="sm" onClick={addImageUrl}>添加</Button>
-                </div>
-              )}
-              {images.length > 0 ? (
-                <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-4">
-                  {images.map((src, i) => (
-                    <div key={i} className="group relative overflow-hidden rounded-md border bg-muted/30">
-                      <img src={resolveMediaUrl(src)} alt={`配图 ${i + 1}`} className="h-24 w-full object-contain p-1" />
-                      <div className="flex items-center justify-between border-t bg-background/90 px-2 py-0.5 text-[11px] text-muted-foreground">
-                        <span>{formatImageHint(src)}</span>
-                        <button
-                          type="button"
-                          aria-label={`移除第 ${i + 1} 张配图`}
-                          className="rounded p-0.5 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
-                          onClick={() => removeImage(i)}
-                        >
-                          <X className="size-3.5" />
-                        </button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <button
-                  type="button"
-                  onClick={() => fileRef.current?.click()}
-                  className="mt-1 flex w-full items-center justify-center gap-2 rounded-md border border-dashed py-3 text-xs text-muted-foreground transition-colors hover:border-primary/50 hover:text-foreground"
-                >
-                  <ImagePlus className="size-4" />
-                  点击上传、拖拽图片到此处，或在题干框按 Ctrl+V 粘贴截图（自动压缩）
-                </button>
-              )}
-            </UiField>
+            <QuestionImageField
+              images={images}
+              maxImages={MAX_IMAGES}
+              uploading={uploading}
+              fileRef={fileRef}
+              onAddFiles={files => void addImageFiles(files)}
+              onAddUrl={addImageUrl}
+              onRemove={removeImage}
+            />
 
             {['single', 'multiple', 'boolean'].includes(form.type) && (
-              <Field label="选项">
-                <FieldDescription>{form.type === 'multiple' ? '点击字母标记全部正确答案，支持为选项单独上传或粘贴配图。' : '点击字母标记正确答案，支持为选项单独上传或粘贴配图。'}</FieldDescription>
-                <input
-                  ref={optFileRef}
-                  type="file"
-                  accept="image/*"
-                  className="hidden"
-                  onChange={e => {
-                    const file = e.target.files?.[0];
-                    if (file) void setOptionImage(optTargetRef.current, file);
-                  }}
-                />
-                <FieldGroup className="gap-2">
-                  {(form.type === 'boolean' ? ['正确', '错误'] : form.opts).map((o: string, i: number) => {
-                    const on = form.correct.includes(i);
-                    const optImg = form.type === 'boolean' ? '' : ((form.optionImages || [])[i] || '');
-                    return (
-                      <div key={i} className="space-y-1.5">
-                        <UiField orientation="horizontal" className="gap-2">
-                          <Button
-                            type="button"
-                            size="icon"
-                            variant={on ? 'default' : 'outline'}
-                            className="shrink-0 rounded-full text-xs font-semibold"
-                            aria-label={`标记选项 ${String.fromCharCode(65 + i)} 为正确答案`}
-                            aria-pressed={on}
-                            onClick={() => field('correct', form.type === 'multiple' ? (on ? form.correct.filter((x: number) => x !== i) : [...form.correct, i]) : [i])}
-                          >
-                            {on ? <Check /> : String.fromCharCode(65 + i)}
-                          </Button>
-                          {form.type === 'boolean' ? (
-                            <FieldDescription className="text-foreground">{o}</FieldDescription>
-                          ) : (
-                            <>
-                              <Input
-                                aria-label={`选项 ${String.fromCharCode(65 + i)}`}
-                                value={o}
-                                placeholder={`选项 ${String.fromCharCode(65 + i)}（可直接粘贴截图）`}
-                                onChange={e => field('opts', form.opts.map((x: string, j: number) => (j === i ? e.target.value : x)))}
-                                onPaste={e => {
-                                  for (const item of Array.from(e.clipboardData?.items || [])) {
-                                    if (item.kind === 'file' && item.type.startsWith('image/')) {
-                                      const file = item.getAsFile();
-                                      if (file) {
-                                        e.preventDefault();
-                                        void setOptionImage(i, file);
-                                        return;
-                                      }
-                                    }
-                                  }
-                                }}
-                              />
-                              <Button
-                                type="button"
-                                size="icon"
-                                variant="ghost"
-                                title={`上传选项 ${String.fromCharCode(65 + i)} 配图`}
-                                aria-label={`上传选项 ${String.fromCharCode(65 + i)} 配图`}
-                                disabled={uploading}
-                                onClick={() => { optTargetRef.current = i; optFileRef.current?.click(); }}
-                              >
-                                <ImagePlus className="size-4" />
-                              </Button>
-                              {form.opts.length > 2 && (
-                                <Button
-                                  type="button"
-                                  size="icon"
-                                  variant="ghost"
-                                  aria-label="删除此选项"
-                                  onClick={() => {
-                                    field('opts', form.opts.filter((_: any, j: number) => j !== i));
-                                    field('optionImages', (form.optionImages || []).filter((_: any, j: number) => j !== i));
-                                    field('correct', form.correct.filter((x: number) => x !== i).map((x: number) => (x > i ? x - 1 : x)));
-                                  }}
-                                >
-                                  <X />
-                                </Button>
-                              )}
-                            </>
-                          )}
-                        </UiField>
-                        {optImg && (
-                          <div className="ms-11 flex items-center gap-2">
-                            <img src={resolveMediaUrl(optImg)} alt={`选项 ${String.fromCharCode(65 + i)} 配图`} className="h-16 rounded border bg-muted/20 object-contain p-0.5" />
-                            <Button type="button" size="sm" variant="ghost" className="h-7 px-2 text-xs text-muted-foreground hover:text-destructive" onClick={() => clearOptionImage(i)}>
-                              <X className="size-3.5" />移除配图
-                            </Button>
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
-                </FieldGroup>
-                {form.type !== 'boolean' && form.opts.length < 8 && (
-                  <Button type="button" variant="outline" size="sm" onClick={() => {
-                    field('opts', [...form.opts, '']);
-                    field('optionImages', [...(form.optionImages || []), '']);
-                  }}>
-                    <Plus />添加选项
-                  </Button>
-                )}
-              </Field>
+              <QuestionOptionsEditor
+                type={form.type}
+                opts={form.opts}
+                optionImages={form.optionImages || []}
+                correct={form.correct}
+                uploading={uploading}
+                onChangeField={field}
+                onSetOptionImage={(i, file) => void setOptionImage(i, file)}
+                onClearOptionImage={clearOptionImage}
+              />
             )}
 
             {form.type === 'text' && (
@@ -490,9 +301,9 @@ export default function QuestionFormDialog({ initial, meta, onClose, onSaved }: 
                   <Field label="单题语速">
                     <ChoiceSelect
                       label="单题语速"
-                      value={String(form.listenRate ?? '')}
-                      onChange={v => field('listenRate', v)}
-                      options={[['', '跟随朗读设置'], ['0.8', '0.8× 慢'], ['0.9', '0.9×'], ['1', '1× 正常'], ['1.1', '1.1×'], ['1.2', '1.2× 快']]}
+                      value={String(form.listenRate ?? '') || 'default'}
+                      onChange={v => field('listenRate', v === 'default' ? '' : v)}
+                      options={[['default', '跟随朗读设置'], ['0.8', '0.8× 慢'], ['0.9', '0.9×'], ['1', '1× 正常'], ['1.1', '1.1×'], ['1.2', '1.2× 快']]}
                     />
                   </Field>
                 </FieldGroup>

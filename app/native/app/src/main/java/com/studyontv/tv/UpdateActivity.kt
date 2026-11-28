@@ -28,6 +28,7 @@ class UpdateActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        UpdateDownload.cancelInstallReadyNotification(this)
         if (LocalOnlyGuard.enabled) {
             finish()
             return
@@ -59,8 +60,9 @@ class UpdateActivity : Activity() {
             gravity = Gravity.CENTER_HORIZONTAL
             setPadding(dp(if (tv) 32 else 20), dp(if (tv) 44 else 28), dp(if (tv) 32 else 20), dp(30))
         }
+        val preReady = preDownloadedApkPath.isNotEmpty()
         content.addView(TvUi.text(this, if (tv) "题了个题 · TV" else "题了个题", 14f, palette.text3))
-        content.addView(TvUi.text(this, "发现新版本", 15f, palette.text2).apply {
+        content.addView(TvUi.text(this, if (preReady) "新版本已下载好" else "发现新版本", 15f, palette.text2).apply {
             setPadding(0, dp(18), 0, 0)
         })
         content.addView(TvUi.text(this, "v$latest", if (tv) 46f else 38f, palette.text, true).apply {
@@ -123,7 +125,12 @@ class UpdateActivity : Activity() {
         buttons.addView(secondary, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(12) })
         content.addView(buttons, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
 
-        status = TvUi.text(this, "下载后覆盖安装，题库和设置不会丢", 12f, palette.text3).apply {
+        status = TvUi.text(
+            this,
+            if (preReady) "安装包已下载完成，覆盖安装不会丢失题库和设置" else "下载后覆盖安装，题库和设置不会丢",
+            12f,
+            palette.text3
+        ).apply {
             gravity = Gravity.CENTER
             setPadding(0, dp(14), 0, 0)
         }
@@ -156,6 +163,12 @@ class UpdateActivity : Activity() {
         } else if (!ApkInstaller.canInstall(this)) {
             goButton?.text = "去允许安装应用"
             status.text = "这套电视系统默认禁止应用自己安装更新，需要先允许「题了个题」安装应用"
+        } else if (installHandedOff) {
+            installHandedOff = false
+            Prefs.setUpdateInProgress(this, false)
+            goButton?.isEnabled = true
+            goButton?.let { refreshPrimaryButtonLabel(it) }
+            status.text = "安装包已就绪，点击下方按钮可重新安装"
         } else if (goButton?.text?.toString() == "去允许安装应用") {
             goButton?.let { refreshPrimaryButtonLabel(it) }
             status.text = "下载后覆盖安装，题库和设置不会丢"
@@ -192,8 +205,8 @@ class UpdateActivity : Activity() {
         Thread {
             val downloaded = try { hasValidCachedApk() } catch (_: Exception) { false }
             runOnUiThread {
-                if (!isFinishing && button.isEnabled && (button.text == "立即更新" || button.text == "去允许安装应用")) {
-                    button.text = if (downloaded) "开始安装" else "立即更新"
+                if (!isFinishing && button.isEnabled && (button.text == "立即更新" || button.text == "去允许安装应用" || button.text == "正在安装…")) {
+                    button.text = if (downloaded) "立即安装" else "立即更新"
                 }
             }
         }.apply { isDaemon = true }.start()

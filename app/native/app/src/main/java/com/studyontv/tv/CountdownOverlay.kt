@@ -20,12 +20,30 @@ import android.widget.TextView
 class CountdownOverlay(private val context: Context) {
     private val manager = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
     private var view: TextView? = null
+    private var layoutParams: WindowManager.LayoutParams? = null
     private var attached = false
     private var blinkOn = true
     private var lastUrgent: Boolean? = null
     private var lastText: String? = null
+    private var lastPosition: String? = null
     var lastError: String = ""
         private set
+
+    companion object {
+        val VALID_POSITIONS = listOf("top-right", "top-left", "bottom-right", "bottom-left")
+
+        internal fun normalizePosition(raw: String?): String {
+            val v = raw?.trim().orEmpty()
+            return if (v in VALID_POSITIONS) v else "top-right"
+        }
+
+        internal fun resolveGravity(position: String): Int = when (normalizePosition(position)) {
+            "top-left" -> Gravity.TOP or Gravity.START
+            "bottom-left" -> Gravity.BOTTOM or Gravity.START
+            "bottom-right" -> Gravity.BOTTOM or Gravity.END
+            else -> Gravity.TOP or Gravity.END
+        }
+    }
 
     private fun dp(v: Int) = (v * context.resources.displayMetrics.density).toInt()
 
@@ -53,8 +71,9 @@ class CountdownOverlay(private val context: Context) {
     }
 
     /** [seconds]: total remaining seconds (quiz credit + daily free quota). Hidden when <= 0. */
-    fun update(seconds: Long) {
+    fun update(seconds: Long, position: String = "top-right") {
         if (seconds <= 0) { hide(); return }
+        val normalizedPos = normalizePosition(position)
         val urgent = seconds <= 60
         val chip = chip()
         // Skip setText when the minute value has not changed: re-assigning the same text every
@@ -62,22 +81,41 @@ class CountdownOverlay(private val context: Context) {
         val label = "剩余 ${(seconds + 59) / 60} 分钟"
         if (label != lastText) { chip.text = label; lastText = label }
         paint(urgent)
+        val targetGravity = resolveGravity(normalizedPos)
+        val targetY = if (normalizedPos.startsWith("bottom-")) dp(24) else dp(12)
         if (!attached) {
             val params = WindowManager.LayoutParams(
                 WindowManager.LayoutParams.WRAP_CONTENT, WindowManager.LayoutParams.WRAP_CONTENT,
                 GateOverlay.applicationWindowType(),
                 WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
                     WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN, PixelFormat.TRANSLUCENT)
-            params.gravity = Gravity.TOP or Gravity.END
-            params.x = dp(20); params.y = dp(12)
+            params.gravity = targetGravity
+            params.x = dp(20); params.y = targetY
             params.title = "StudyOnTV countdown"
             try {
                 manager.addView(chip, params)
+                layoutParams = params
+                lastPosition = normalizedPos
                 attached = true
                 lastError = ""
             } catch (e: Exception) {
                 lastError = e.javaClass.simpleName + ": " + (e.message ?: "")
                 return
+            }
+        } else if (lastPosition != normalizedPos) {
+            val params = layoutParams
+            if (params != null) {
+                params.gravity = targetGravity
+                params.x = dp(20)
+                params.y = targetY
+                try {
+                    manager.updateViewLayout(chip, params)
+                    lastPosition = normalizedPos
+                } catch (_: Exception) {
+                    hide()
+                    update(seconds, normalizedPos)
+                    return
+                }
             }
         }
         chip.visibility = if (urgent) { blinkOn = !blinkOn; if (blinkOn) View.VISIBLE else View.INVISIBLE } else View.VISIBLE
@@ -87,6 +125,8 @@ class CountdownOverlay(private val context: Context) {
         val chip = view ?: return
         if (attached) try { manager.removeViewImmediate(chip) } catch (_: Exception) { }
         attached = false
+        layoutParams = null
+        lastPosition = null
     }
 
     fun destroy() {

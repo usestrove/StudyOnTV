@@ -4,8 +4,6 @@ import {
   BookCheck,
   BookX,
   CheckCircle2,
-  ChevronDown,
-  Flame,
   LoaderCircle,
   PlusCircle,
   Search,
@@ -15,49 +13,18 @@ import {
 import { toast } from 'sonner';
 import { api } from './api';
 import { ClearExtraPoolButton } from './components/ClearExtraPoolButton';
-import { FilterSelect, MathText, labels } from './components/bank/shared';
-import { Badge } from '@/components/ui/badge';
+import { FilterSelect } from './components/bank/shared';
+import WrongQuestionCard, { type WrongQuestionItem } from './components/wrong-book/WrongQuestionCard';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Checkbox } from '@/components/ui/checkbox';
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { InputGroup, InputGroupAddon, InputGroupButton, InputGroupInput } from '@/components/ui/input-group';
-
-interface WrongQuestionItem {
-  id: string;
-  q: string;
-  type: string;
-  subject?: string;
-  level?: string;
-  bank?: string;
-  options?: string[];
-  answer?: string;
-  explain?: string;
-  answered: number;
-  correct: number;
-  wrongCount: number;
-  lastAt?: number;
-  lastCorrect?: number;
-}
 
 interface WrongQuestionsResponse {
   items: WrongQuestionItem[];
   total: number;
   extraPool: number;
   extraQueueIds: string[];
-}
-
-function formatLastAt(ts?: number): string {
-  if (!ts) return '—';
-  const date = new Date(ts);
-  if (Number.isNaN(date.getTime())) return '—';
-  return date.toLocaleString('zh-CN', {
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false,
-  });
 }
 
 export default function WrongBookPage({ sessionId, state }: { sessionId: number; state?: any }) {
@@ -184,7 +151,6 @@ export default function WrongBookPage({ sessionId, state }: { sessionId: number;
 
   return (
     <div className="space-y-4 pb-6">
-      {/* 顶部汇总与快捷操作 */}
       <div className="grid gap-3 sm:grid-cols-2">
         <Card className="gap-0 py-4 shadow-xs">
           <CardContent className="flex items-center justify-between gap-3 px-4 sm:px-5">
@@ -225,7 +191,6 @@ export default function WrongBookPage({ sessionId, state }: { sessionId: number;
         </Card>
       </div>
 
-      {/* 筛选栏 */}
       <Card className="gap-0 py-3 shadow-xs">
         <CardContent className="flex flex-col gap-2.5 px-4 sm:flex-row sm:items-center sm:px-5">
           <div className="grid grid-cols-2 gap-2 sm:flex sm:w-auto sm:shrink-0">
@@ -279,7 +244,6 @@ export default function WrongBookPage({ sessionId, state }: { sessionId: number;
         </CardContent>
       </Card>
 
-      {/* 批量操作栏 */}
       {items.length > 0 && (
         <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border/70 bg-muted/30 px-3.5 py-2">
           <label className="flex cursor-pointer items-center gap-2 text-xs text-muted-foreground">
@@ -313,7 +277,6 @@ export default function WrongBookPage({ sessionId, state }: { sessionId: number;
         </div>
       )}
 
-      {/* 列表内容 */}
       {wrongQuery.isLoading ? (
         <div className="flex items-center justify-center gap-2 py-16 text-sm text-muted-foreground">
           <LoaderCircle className="size-4 animate-spin" />
@@ -356,147 +319,18 @@ export default function WrongBookPage({ sessionId, state }: { sessionId: number;
         </Card>
       ) : (
         <div className="space-y-3">
-          {items.map(item => {
-            const inQueue = extraQueueSet.has(item.id);
-            const checked = selected.includes(item.id);
-            return (
-              <Card
-                key={item.id}
-                className={`gap-0 py-0 shadow-xs transition-colors ${
-                  checked ? 'border-primary/50 bg-primary/[0.02]' : ''
-                }`}
-              >
-                <CardContent className="p-4 sm:px-5">
-                  <div className="flex items-start gap-3">
-                    <Checkbox
-                      className="mt-1 shrink-0"
-                      checked={checked}
-                      onCheckedChange={() => toggleOne(item.id)}
-                      aria-label={`选择错题 ${item.id}`}
-                    />
-                    <div className="min-w-0 flex-1 space-y-2.5">
-                      {/* 标签与错题统计 */}
-                      <div className="flex flex-wrap items-center gap-1.5">
-                        <Badge variant="outline" className="text-[11px]">
-                          {labels[item.type] || item.type || '题目'}
-                        </Badge>
-                        {item.subject && (
-                          <Badge variant="secondary" className="text-[11px]">
-                            {item.subject}
-                          </Badge>
-                        )}
-                        {item.level && (
-                          <Badge variant="secondary" className="text-[11px]">
-                            {item.level}
-                          </Badge>
-                        )}
-                        {item.bank && item.bank !== '默认题库' && (
-                          <Badge variant="outline" className="text-[11px] text-muted-foreground">
-                            {item.bank}
-                          </Badge>
-                        )}
-                        {inQueue && (
-                          <Badge className="bg-primary/15 text-primary hover:bg-primary/20 text-[11px]">
-                            <Sparkles className="me-1 size-3" />
-                            已在加练池
-                          </Badge>
-                        )}
-                        <span className="ms-auto flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                          <span className="inline-flex items-center gap-1 font-medium text-rose-600 dark:text-rose-400">
-                            <Flame className="size-3.5" />
-                            错 {item.wrongCount} 次
-                          </span>
-                          <span>共答 {item.answered} 次</span>
-                          <span className="hidden sm:inline">上次：{formatLastAt(item.lastAt)}</span>
-                        </span>
-                      </div>
-
-                      {/* 题干（支持 LaTeX 公式） */}
-                      <MathText
-                        text={item.q || '（无题干）'}
-                        className="text-sm font-medium leading-relaxed text-foreground break-words"
-                      />
-
-                      <div className="text-[11px] text-muted-foreground sm:hidden">
-                        上次作答：{formatLastAt(item.lastAt)}
-                      </div>
-
-                      {/* 折叠答案解析 + 单题操作 */}
-                      <Collapsible>
-                        <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
-                          <CollapsibleTrigger
-                            type="button"
-                            className="group inline-flex items-center gap-1 text-xs text-muted-foreground transition-colors hover:text-foreground"
-                          >
-                            <ChevronDown className="size-3.5 transition-transform group-data-[state=open]:rotate-180" />
-                            查看答案与解析
-                          </CollapsibleTrigger>
-                          <div className="flex flex-wrap items-center gap-1.5">
-                            <Button
-                              type="button"
-                              size="sm"
-                              variant={inQueue ? 'secondary' : 'outline'}
-                              className="h-7 px-2 text-xs"
-                              disabled={busy || inQueue}
-                              onClick={() => addExtra.mutate([item.id])}
-                            >
-                              <PlusCircle className="size-3.5" />
-                              {inQueue ? '已在加练池' : '加入加练池'}
-                            </Button>
-                            <Button
-                              type="button"
-                              size="sm"
-                              variant="ghost"
-                              className="h-7 px-2 text-xs"
-                              disabled={busy}
-                              onClick={() => markMastered.mutate([item.id])}
-                            >
-                              <CheckCircle2 className="size-3.5" />
-                              标为已掌握
-                            </Button>
-                          </div>
-                        </div>
-
-                        <CollapsibleContent className="mt-3 space-y-2 rounded-lg border border-border/60 bg-muted/35 p-3 text-xs">
-                          {Array.isArray(item.options) && item.options.length > 0 && (
-                            <div className="space-y-1">
-                              <div className="font-medium text-muted-foreground">选项</div>
-                              <div className="grid gap-1 sm:grid-cols-2">
-                                {item.options.map((opt, idx) => (
-                                  <div key={idx} className="flex items-start gap-1.5">
-                                    <span className="shrink-0 font-mono text-muted-foreground">
-                                      {String.fromCharCode(65 + idx)}.
-                                    </span>
-                                    <MathText text={String(opt || '')} className="min-w-0 break-words" />
-                                  </div>
-                                ))}
-                              </div>
-                            </div>
-                          )}
-                          <div className="space-y-1">
-                            <div className="font-medium text-emerald-700 dark:text-emerald-400">参考答案</div>
-                            <MathText
-                              text={item.answer || '暂无参考答案'}
-                              className="leading-relaxed text-foreground break-words"
-                            />
-                          </div>
-                          {item.explain && (
-                            <div className="space-y-1 border-t border-border/50 pt-2">
-                              <div className="font-medium text-muted-foreground">解析</div>
-                              <MathText
-                                text={item.explain}
-                                className="leading-relaxed text-muted-foreground break-words"
-                              />
-                            </div>
-                          )}
-                        </CollapsibleContent>
-                      </Collapsible>
-                    </div>
-                  </div>
-                </CardContent>
-              </Card>
-            );
-          })}
+          {items.map(item => (
+            <WrongQuestionCard
+              key={item.id}
+              item={item}
+              checked={selected.includes(item.id)}
+              inQueue={extraQueueSet.has(item.id)}
+              busy={busy}
+              onToggle={toggleOne}
+              onAddExtra={id => addExtra.mutate([id])}
+              onMarkMastered={id => markMastered.mutate([id])}
+            />
+          ))}
         </div>
       )}
     </div>

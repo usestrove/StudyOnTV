@@ -70,7 +70,7 @@ export async function previewApi(path:string,method:string,body:any){
  if(route==='/api/system-settings')return{ok:true};
  if(route==='/api/remote'){
   if(body.action==='credit'){learning.remainingSeconds=Math.max(0,learning.remainingSeconds+body.minutes*60);learning.todayLimitMinutes=(learning.todayLimitMinutes??config.dailyMinutes)+body.minutes;return structuredClone({learning});}
-  learning.override=body.action==='cancel'?null:{mode:body.action,remainingSeconds:(body.minutes||30)*60,at:Date.now()};
+  learning.override=body.action==='cancel'?null:{mode:body.action,untilShutdown:body.untilShutdown===true,remainingSeconds:body.untilShutdown?-1:(body.minutes||30)*60,at:Date.now()};
   return structuredClone({learning});
  }
  if(route==='/api/config'){if(method==='PUT')config={...config,...body,version:config.version+1};return structuredClone({config});}
@@ -82,7 +82,7 @@ export async function previewApi(path:string,method:string,body:any){
   ],duplicates:0};
  }
  if(route==='/api/questions'){
-  if(method==='POST'){const items=body.items||[body];let added=0;for(const item of items){const index=questions.findIndex(q=>q.id===item.id);if(index>=0){questions[index]={...item};added++;continue;}if(body.skipDuplicates&&questions.some(q=>stemKey(q.q)===stemKey(item.q)))continue;questions.push({...item,id:'preview-'+crypto.randomUUID()});added++;}return{ok:true,added,skipped:items.length-added};}
+  if(method==='POST'){const items=body.items||[body];let added=0;for(const item of items){const index=questions.findIndex(q=>q.id===item.id);if(index>=0){questions[index]={...item};added++;continue;}if(body.skipDuplicates&&questions.some(q=>stemKey(q.q)===stemKey(item.q)))continue;questions.push({...item,id:'preview-'+Date.now().toString(36)+'-'+Math.random().toString(36).slice(2,8)});added++;}return{ok:true,added,skipped:items.length-added};}
   // 真机上是服务端筛选 + 分页，预览里用同一套参数在内存里模拟
   const query=new URLSearchParams(path.split('?')[1]||'');
   const keyword=(query.get('search')||'').trim().toLowerCase();

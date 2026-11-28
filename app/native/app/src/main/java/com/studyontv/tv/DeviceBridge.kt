@@ -184,17 +184,30 @@ open class DeviceBridge(protected val activity: Activity, private val connection
     @JavascriptInterface
     fun updateInfo(): String {
         val info = Updater.newerThanCurrent(activity, Updater.cachedInfo(activity)) ?: return ""
-        return Updater.toJson(info).put("current", Updater.currentVersion(activity)).toString()
+        val autoDownload = Updater.resolveAutoDownloadSetting(Prefs.autoDownloadUpdate(activity), LocalOnlyGuard.enabled)
+        val ready = Updater.isApkReady(activity, info)
+        if (!Updater.shouldPromptOnDevice(autoDownload, ready, info.force)) return ""
+        return Updater.toJson(info)
+            .put("current", Updater.currentVersion(activity))
+            .put("apkReady", ready)
+            .toString()
     }
 
     @JavascriptInterface
     fun installUpdate(url: String, latest: String, notes: String) {
         val cached = Updater.newerThanCurrent(activity, Updater.cachedInfo(activity))
-        val payload = if (cached != null && cached.url == url) Updater.toJson(cached) else JSONObject()
+        val matched = cached != null && (cached.url == url || cached.latest == latest)
+        val payload = if (matched) Updater.toJson(cached!!) else JSONObject()
             .put("latest", latest).put("notes", notes).put("url", url)
         payload.put("current", BuildConfig.VERSION_NAME)
+        val ready = matched && Updater.isApkReady(activity, cached)
         activity.runOnUiThread {
-            activity.startActivity(Intent(activity, UpdateActivity::class.java).putExtra("payload", payload.toString()))
+            val intent = Intent(activity, UpdateActivity::class.java).putExtra("payload", payload.toString())
+            if (ready) {
+                intent.putExtra("apkPath", ApkInstaller.apkFile(activity).absolutePath)
+                intent.putExtra("auto", true)
+            }
+            activity.startActivity(intent)
         }
     }
 

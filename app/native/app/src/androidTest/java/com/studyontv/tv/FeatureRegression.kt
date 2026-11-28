@@ -13,14 +13,19 @@ object FeatureRegression {
     /** 单独跑隐藏桌面图标（-e launcher 1），改这块时不用等整套回归 */
     fun launcher(context: Context) = launcherIcon(context)
 
+    fun clockQuota(context: Context) {
+        bootFreeInterval(context)
+        businessClock(context)
+        networkCorrectsFutureUsageDay(context)
+        dailyQuotaSurvivesClockRollback(context)
+        videoSettlementAcrossMidnight(context)
+    }
+
     fun run(context: Context) {
         migration(context)
         childMigration(context)
         levelSelection(context)
-        bootFreeInterval(context)
-        businessClock(context)
-        dailyQuotaSurvivesClockRollback(context)
-        videoSettlementAcrossMidnight(context)
+        clockQuota(context)
         val name = "feature-regression.db"
         context.deleteDatabase(name)
         val store = LocalStore(context, name)
@@ -788,6 +793,76 @@ object FeatureRegression {
         }
     }
 
+    private fun networkCorrectsFutureUsageDay(context: Context) {
+        fun at(day: Int, hour: Int = 0): Long =
+            Calendar.getInstance(TimeZone.getTimeZone("Asia/Shanghai")).apply {
+                clear()
+                set(2030, Calendar.JANUARY, day, hour, 0)
+            }.timeInMillis
+
+        val name = "future-usage-day.db"
+        context.deleteDatabase(name)
+        var network: Long? = null
+        val store = LocalStore(context, name) {
+            DeviceClock.read(Build.VERSION_CODES.TIRAMISU, { network }, { at(20, 9) })
+        }
+        try {
+            store.saveConfig(JSONObject().put("timezone", "Asia/Shanghai").put("dailyMinutes", 120)
+                .put("dailyFreeMinutes", 30).put("bootFreeMinutes", 0))
+            var engine = LearningEngine(store)
+            engine.consume(5000)
+            engine.remote("credit", 5, "test")
+            store.logEvent("quiz_pass", JSONObject())
+            check(store.get("usage_day") == at(20).toString())
+            check(store.get("usage_day_source") == DeviceClock.Source.SYSTEM.id)
+            check(engine.status().getInt("roundsDoneToday") == 1)
+            engine.flushUsage()
+
+            // 旧版本的数据库有额度和事件记录，但不带时钟来源和组数。
+            store.writableDatabase.delete("kv", "k IN (?, ?)", arrayOf("usage_day_source", "usage_day_rounds"))
+            val foreignUsageDay = JSONObject().put("format", "studyontv-backup")
+                .put("kv", JSONObject().put("usage_day_rounds", "90").put("usage_day_source", "network")
+                    .put("usage_day_rejected_system", at(5).toString()))
+            store.restoreBackup(foreignUsageDay, "merge")
+            check(store.get("usage_day_source").isEmpty() && store.get("usage_day_rounds").isEmpty() &&
+                store.get("usage_day_rejected_system").isEmpty()) { "合并不能把另一账本的元数据写入本机" }
+            network = at(7, 9)
+            val corrected = engine.status()
+            check(store.get("usage_day") == at(7).toString())
+            check(store.get("usage_day_source") == DeviceClock.Source.NETWORK.id)
+            check(corrected.getLong("freeQuotaSeconds") == 1795L && corrected.getDouble("usedMinutes") == 5000 / 60000.0)
+            check(store.get("credit_ms") == "300000" && store.get("cap_adjust_ms") == "300000")
+            check(store.get("free_used_ms") == "5000")
+            check(corrected.getInt("roundsDoneToday") == 1 && store.todayStats().getInt("rounds") == 1)
+            check(store.todayStats().getDouble("usedMinutes") == 0.0) { "今天的统计不应包含未来时间戳" }
+
+            network = null
+            engine = LearningEngine(store)
+            check(engine.status().getLong("freeQuotaSeconds") == 1795L) { "再次使用已校正的未来系统日期不能补发额度" }
+            store.logEvent("quiz_pass", JSONObject())
+            check(engine.status().getInt("roundsDoneToday") == 2) { "新完成的组仍应计入当前记账日" }
+            check(store.get("usage_day") == at(7).toString())
+
+            val backup = JSONObject().put("format", "studyontv-backup")
+                .put("kv", JSONObject().put("usage_day_rounds", "90"))
+                .put("events", JSONArray()
+                    .put(JSONObject().put("type", "quiz_pass").put("ts", at(7, 11)))
+                    .put(JSONObject().put("type", "quiz_pass").put("ts", at(6, 11))))
+            store.restoreBackup(backup, "merge")
+            store.restoreBackup(backup, "merge")
+            check(engine.status().getInt("roundsDoneToday") == 3) { "合并只累计真正新增的记账日事件" }
+
+            network = at(8, 9)
+            val nextDay = engine.status()
+            check(store.get("usage_day") == at(8).toString())
+            check(nextDay.getLong("freeQuotaSeconds") == 1800L && nextDay.getDouble("usedMinutes") == 0.0)
+            check(nextDay.getInt("roundsDoneToday") == 0 && store.todayStats().getInt("rounds") == 0)
+        } finally {
+            store.close()
+            context.deleteDatabase(name)
+        }
+    }
+
     private fun dailyQuotaSurvivesClockRollback(context: Context) {
         val name = "daily-quota-clock-regression.db"
         context.deleteDatabase(name)
@@ -897,11 +972,11 @@ object FeatureRegression {
             val settled = engine.completeVideo(lessonId)
             check(settled.getDouble("rewardMinutes") == 10.0)
             check(settled.getJSONObject("status").getLong("remainingSeconds") == 600L) { "结算响应沿用事务开始时的记账日" }
-            check(store.roundsDoneToday(today) == 1)
+            check(store.roundsInDay(today) == 1)
             check(engine.status().getLong("remainingSeconds") == 0L)
             check(store.get("usage_day") == tomorrow.toString())
             check(runCatching { engine.completeVideo(lessonId) }.exceptionOrNull() is IllegalArgumentException)
-            check(store.roundsDoneToday(today) == 1) { "跨午夜结算只能发放一次" }
+            check(store.roundsInDay(today) == 1) { "跨午夜结算只能发放一次" }
         } finally {
             store.close()
             context.deleteDatabase(name)

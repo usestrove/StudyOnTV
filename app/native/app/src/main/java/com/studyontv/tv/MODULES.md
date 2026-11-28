@@ -6,15 +6,15 @@
 
 | 文件 | 职责 |
 |---|---|
-| `GateService.kt` | 前台服务，每秒 tick 检查管控状态（计时、弹窗、静音、诊断） |
-| `GateTickState.kt` | 单次 tick 的事实快照（纯数据），弹窗 / 静音 / 角标读同一份判断 |
-| `GateOverlay.kt` / `CountdownOverlay.kt` / `GateActivity.kt` | 悬浮窗管控层、右上角剩余时间角标、全屏学习页 |
-| `LearningEngine.kt` | 答题业务：出题、计时、奖励、错题与覆盖优先 |
+| `GateService.kt` / `GateMonitorLoop.kt` / `GateNotifications.kt` / `GateScreenState.kt` | 前台服务、每秒 tick 管控循环、前台通知与权限兜底、亮灭屏广播与诊断快照 |
+| `GatePresentation.kt` / `OverlayAccess.kt` / `GateTickState.kt` | 弹窗/静音/退避策略状态机、悬浮窗三层权限探测、单次 tick 事实快照 |
+| `GateOverlay.kt` / `GateOverlayInput.kt` / `CountdownOverlay.kt` / `GateActivity.kt` | 悬浮窗管控层与内联输入框、右上角剩余时间角标、全屏学习页 |
+| `LearningEngine.kt` / `LearningSchedule.kt` / `LearningDayPolicy.kt` / `LearningRemoteOverride.kt` / `LearningExtraFlow.kt` / `LearningAnswerMatch.kt` / `LearningRoundPicker.kt` / `LearningQuizStart.kt` / `LearningQuizAnswer.kt` | 答题协调入口、周计划/网课窗口、跨日与校时额度、远程覆盖与关机解锁、错题加练池、判分归一化、抽题与作答/批改结算 |
 | `LearningNavigation.kt` | 学习退出策略快照、遥控器导航按键过滤与不可用提示 |
 | `TimePolicy.kt` / `DeviceClock.kt` | 可用时段判断、「今天」的界线（支持家长指定时区） |
 | `WatchGap.kt` | 进程被固件清理期间漏掉的观看时长补算（心跳 + 开机时钟，不含深睡） |
 | `WatchWhitelist.kt` | 不计时应用白名单（屏保 / 网课）的校验与解析 |
-| `LocalStore.kt` | SQLite 数据访问层（题库、统计、事件、配置、多孩子、学情与整机备份） |
+| `LocalStore.kt` / `StoreSchema.kt` / `StoreMedia.kt` / `StoreChildren.kt` / `StoreConfig.kt` / `StoreQuestionScope.kt` / `StoreQuestionQuery.kt` / `StoreQuestionWrite.kt` / `StoreWrongAndExtra.kt` / `StoreSpacedRepetition.kt` / `StoreAnalytics.kt` / `StoreStats.kt` / `StoreBackupSanitizer.kt` / `StoreBackupExport.kt` / `StoreBackupRestore.kt` | SQLite 核心与分领域数据访问层（建表迁移、媒体迁移、多孩子、配置、题库查询/写入/错题与加练、SM-2 复习、统计与学情、整机与多端同步备份） |
 | `MediaStore.kt` | 题目配图与手写作答的本地文件存储、SHA-256 去重与孤儿清理 |
 | `QuestionOptions.kt` | 选项与选项配图同步乱序及答案映射 |
 
@@ -22,7 +22,7 @@
 
 | 文件 | 职责 |
 |---|---|
-| `LanServer.kt` | 局域网 HTTP 服务器（手写，零依赖）：解析请求、统一鉴权、静态文件 |
+| `LanServer.kt` / `LanAccessPolicy.kt` / `LanStaticAssets.kt` / `LanDeviceRoutes.kt` / `LanQuizRoutes.kt` / `LanQuestionRoutes.kt` / `LanSettingsRoutes.kt` / `LanBackupRoutes.kt` | 局域网 HTTP 服务器（零依赖）、CORS 与三类令牌鉴权、静态资源缓存及分领域业务路由 |
 | `Router.kt` | 路由表：方法 + 路径 → 处理器，精确路径优先，支持前缀路由 |
 | `AdminAuth.kt` | 家长管理口令、登录会话与临时验证 |
 | `IntegrationAuth.kt` | Home Assistant 等外部集成的独立令牌与权限 |
@@ -48,16 +48,16 @@
 | `EducationalVideoActivity.kt` / `VideoLessons.kt` | 公益视频学习 |
 | `TvUi.kt` / `FreshUi.kt` | 遥控器焦点逻辑、界面刷新 |
 | `DesktopMode.kt` / `LauncherIcon.kt` | 设为电视桌面、隐藏桌面图标 |
-| `UpdateActivity.kt` / `UpdateInstallReceiver.kt` / `Updater.kt` / `ApkInstaller.kt` / `ApkProvider.kt` | 应用自更新与安装 |
+| `UpdateActivity.kt` / `UpdateInstallReceiver.kt` / `Updater.kt` / `UpdateDownload.kt` / `ApkInstaller.kt` / `ApkProvider.kt` | 应用自更新、下载校验与安装 |
 | `Pgyer.kt` | 蒲公英发布源 |
 
 ## 功能模块
 
 | 文件 | 职责 |
 |---|---|
-| `SpeechReader.kt` / `EdgeTts.kt` / `VoiceCapture.kt` | TTS 朗读（含内置微软 Edge 在线朗读）、语音作答 |
+| `SpeechReader.kt` / `SpeechSettings.kt` / `CloudSpeechProviders.kt` / `SpeechAudioPlayer.kt` / `EdgeTts.kt` / `EdgeTtsProtocol.kt` / `VoiceCapture.kt` | TTS 朗读协调、配置密钥、云端合成与音频播放、微软 Edge 在线朗读协议与语音作答 |
 | `TtsProbe.kt` | 本地语音引擎探测：有没有引擎、缺不缺语言包，供面板自检（#128） |
-| `GradingService.kt` | AI 批改与 AI 出题 |
+| `GradingService.kt` / `GradingClient.kt` | AI 批改与 AI 出题、OpenAI 兼容 HTTP 客户端与解析 |
 | `HolidayService.kt` | 节假日日历同步 |
 | `KeepAlive.kt` / `Watchdog.kt` / `RevivalListener.kt` / `ProcessHealth.kt` / `BootReceiver.kt` / `GuardSync.kt` | 保活、开机自启、被系统清理后的复活 |
 | `UninstallGuard.kt` | 防卸载（设备管理员） |

@@ -231,4 +231,23 @@ class UpdaterTest {
         assertNull(ApkInstaller.validateSignatureSets(emptySet(), setOf(certA)))
         assertNull(ApkInstaller.validateSignatureSets(emptySet(), emptySet()))
     }
+
+    @Test
+    fun devicePromptWaitsForReadyApkWhenAutoDownloadEnabled() {
+        // 开启后台自动下载时：未下好前不打扰，下好后再弹提示；强制更新不受限制
+        assertFalse(Updater.shouldPromptOnDevice(autoDownload = true, apkReady = false, force = false))
+        assertTrue(Updater.shouldPromptOnDevice(autoDownload = true, apkReady = true, force = false))
+        assertTrue(Updater.shouldPromptOnDevice(autoDownload = true, apkReady = false, force = true))
+        // 关闭自动下载时保持立即提示
+        assertTrue(Updater.shouldPromptOnDevice(autoDownload = false, apkReady = false, force = false))
+    }
+
+    @Test
+    fun preDownloadRetryRespectsCooldownAndResetsOnNewVersion() {
+        val t0 = 5_000_000L
+        assertTrue(Updater.canRetryPreDownload(0L, "", "0.5.13", t0))
+        assertFalse(Updater.canRetryPreDownload(t0, "0.5.13", "0.5.13", t0 + UpdateDownload.PRE_DOWNLOAD_RETRY_COOLDOWN_MS - 1L))
+        assertTrue(Updater.canRetryPreDownload(t0, "0.5.13", "0.5.13", t0 + UpdateDownload.PRE_DOWNLOAD_RETRY_COOLDOWN_MS))
+        assertTrue(Updater.canRetryPreDownload(t0, "0.5.13", "0.5.14", t0 + 1_000L))
+    }
 }

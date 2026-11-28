@@ -16,11 +16,11 @@ import android.os.SystemClock
  *  1. AudioManager.isMusicActive()
  *  2. getActivePlaybackConfigurations() 非空 —— 该列表只包含当前处于活动状态的播放器
  *
- * 并加 3 秒滞回，避免切视频、翻页时计时抖动。
+ * 并加 10 秒滞回，避免广告切换、缓冲或翻页时计时抖动。
  */
 object Playback {
     @Volatile private var lastActiveAt = -1L
-    internal const val HYSTERESIS_MS = 3000L
+    internal const val HYSTERESIS_MS = 10_000L
 
     /** 媒体播放状态滞回判定：未记录过播放（lastActiveAt < 0）时冷启动不误判为播放中（ST-111） */
     internal fun isActiveWithHysteresis(

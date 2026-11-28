@@ -68,7 +68,7 @@ class WatchAccessibilityService : AccessibilityService() {
             // anchor / countdown / gate 悬浮窗不代表应用 Activity 在前台（#96）。
             val ownOverlay = pkg == packageName && !Foreground.hasResumedActivity()
             if (!ownOverlay && (!GateService.hasGate() || pkg != packageName)) {
-                val cls = rawCls?.takeIf { it.contains("Activity") }
+                val cls = rawCls?.takeIf { it.isNotBlank() }
                 Foreground.update(pkg, cls)
                 SystemSettingsGuard.onExternalWindowChanged(this, pkg)
             }

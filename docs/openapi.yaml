@@ -1127,7 +1127,9 @@ paths:
       summary: 远程解锁 / 暂停 / 调整今日余额
       description: |
         家长令牌（Authorization）或带「控制」权限的集成令牌可用；X-Admin-Key 和本机设备令牌不能调用。
-        - unlock：临时解锁 1–1440 分钟，不扣学习余额，到点自动恢复规则。
+        - unlock：临时解锁 1–1440 分钟；或设置 untilShutdown=true，解锁到本次关机。不扣学习余额。
+          到本次关机模式在真正关机、重启或断电后的下次启动失效，待机、熄屏和应用重启仍有效。
+          无法可靠读取开机计数的设备会拒绝此模式，请使用定时解锁。
         - lock：立即暂停；minutes=0 表示一直暂停到手动取消（最多 7 天）。
         - cancel：取消当前的临时解锁或暂停。
         - indefinite：持续关闭管控，直到手动取消。
@@ -2241,6 +2243,12 @@ components:
           enum: [unlock, lock, indefinite]
         minutes:
           type: integer
+        untilShutdown:
+          type: boolean
+          description: true 表示本次开机期间有效，真正关机、重启或断电后的下次启动恢复规则
+        atElapsed:
+          type: integer
+          format: int64
         at:
           type: integer
           format: int64
@@ -2257,7 +2265,7 @@ components:
           format: int64
         remainingSeconds:
           type: integer
-          description: -1 表示无限期
+          description: -1 表示没有倒计时，需结合 mode 和 untilShutdown 判断无限期或到本次关机
     ActivePoint:
       type: object
       nullable: true
@@ -3545,7 +3553,12 @@ components:
           type: integer
           description: |
             unlock: 1–1440；lock: 0–10080（0 表示一直暂停到手动取消）；
+            unlock 且 untilShutdown=true 时必须为 0 或省略；
             credit: -480 到 480 的非零整数；cancel / indefinite 忽略此字段。
+        untilShutdown:
+          type: boolean
+          default: false
+          description: 仅 unlock 可为 true。解锁到本次关机，待机、熄屏与应用重启仍有效，可随时 cancel
     RemoteResponse:
       type: object
       required: [learning]

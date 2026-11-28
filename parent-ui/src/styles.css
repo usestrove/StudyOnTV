@@ -2,6 +2,8 @@
 @import "tw-animate-css";
 @import "./theme.css";
 @custom-variant dark (&:is(.dark *));
+/* 仅桌面悬停才隐藏的辅助操作用 can-hover 包裹，手机/平板触屏默认常显 */
+@custom-variant can-hover (@media (hover: hover));
 
 @layer base {
   * {

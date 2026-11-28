@@ -44,7 +44,16 @@ export default function BankAutomationPanel({sessionId}:{sessionId:number}){
   },
  });
  const types:string[]=form.types||[];
- const valid=form.sources.every((source:any)=>(!source.name.trim()&&!source.url.trim())||(!!source.name.trim()&&/^https?:\/\//.test(source.url.trim())))&&inIntRange(form.minimum,1,500)&&inIntRange(form.batch,1,20)&&inIntRange(form.masteryAttempts,1,100)&&inIntRange(form.masteryAccuracy,50,100)&&(!form.autoAi||types.length>0);
+ const trimmedSources=(form.sources||[]).map((s:any)=>({name:String(s?.name||'').trim(),url:String(s?.url||'').trim()}));
+ const hasDraftSource=trimmedSources.some((s:any)=>!s.name||!s.url);
+ const sourceNameTooLong=trimmedSources.some((s:any)=>s.name.length>40);
+ const sourceInvalidUrl=trimmedSources.some((s:any)=>s.url&&!/^https?:\/\/\S+/.test(s.url));
+ const sourceDupName=new Set(trimmedSources.map((s:any)=>s.name).filter(Boolean)).size!==trimmedSources.filter((s:any)=>s.name).length;
+ const sourceDupUrl=new Set(trimmedSources.map((s:any)=>s.url).filter(Boolean)).size!==trimmedSources.filter((s:any)=>s.url).length;
+ const sourcesValid=!hasDraftSource&&!sourceNameTooLong&&!sourceInvalidUrl&&!sourceDupName&&!sourceDupUrl;
+ const missingTopic=!!form.autoAi&&!String(form.topic||'').trim();
+ const topicTooLong=String(form.topic||'').trim().length>2000;
+ const valid=sourcesValid&&inIntRange(form.minimum,1,500)&&inIntRange(form.batch,1,20)&&inIntRange(form.masteryAttempts,1,100)&&inIntRange(form.masteryAccuracy,50,100)&&(!form.autoAi||(types.length>0&&!missingTopic&&!topicTooLong));
  useEffect(()=>{if(!dirty||!valid||save.isPending||failedSignature===signature)return;const timer=window.setTimeout(()=>save.mutate(form),800);return()=>window.clearTimeout(timer);},[signature,dirty,valid,save.isPending,failedSignature]);
  const sync=useMutation({
   mutationFn:()=>api('/api/bank-automation/sync','POST',{}),
@@ -83,6 +92,11 @@ export default function BankAutomationPanel({sessionId}:{sessionId:number}){
       <Button type="button" variant="outline" size="sm" disabled={form.sources.length>=20} onClick={()=>field('sources',[...form.sources,{name:'',url:'',enabled:true}])}>添加来源</Button>
       <FieldDescription className="text-xs">移除后停止同步；已下载的题库需单独删除。</FieldDescription>
      </div>
+     {hasDraftSource&&<FieldDescription className="text-xs text-amber-600 dark:text-amber-400">请填写完整的远程题库名称（1–40 字）和 http/https 地址，填完后会自动保存。</FieldDescription>}
+     {sourceNameTooLong&&<FieldError>远程题库名称不能超过 40 个字</FieldError>}
+     {sourceInvalidUrl&&<FieldError>远程地址须以 http:// 或 https:// 开头</FieldError>}
+     {sourceDupName&&<FieldError>远程题库名称不能重复</FieldError>}
+     {sourceDupUrl&&<FieldError>同一远程地址只能配置一次</FieldError>}
     </FieldSet>
 
     <Separator/>
@@ -108,7 +122,11 @@ export default function BankAutomationPanel({sessionId}:{sessionId:number}){
         </Field>)}
        </div>
       </Field>
-      <div className="pt-3"><Textarea aria-label="自动补题范围" placeholder="例如：四年级上册数学，分数基础，附解析" value={form.topic} onChange={e=>field('topic',e.target.value)}/></div>
+      <div className="space-y-1.5 pt-3">
+       <Textarea aria-label="自动补题范围" placeholder="例如：四年级上册数学，分数基础，附解析" value={form.topic} onChange={e=>field('topic',e.target.value)}/>
+       {missingTopic&&<FieldDescription className="text-xs text-amber-600 dark:text-amber-400">请先填写出题范围，填完后会自动保存并开启自动补题。</FieldDescription>}
+       {topicTooLong&&<FieldError>出题范围不能超过 2000 个字</FieldError>}
+      </div>
      </>}
     </FieldSet>
 

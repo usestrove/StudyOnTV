@@ -2,6 +2,7 @@
 /app/native/build/
 /app/native/app/build/
 /app/native/legacy/build/
+/app/native/parent/build/
 /app/native/.gradle/
 /app/native/.idea/
 /app/native/local.properties

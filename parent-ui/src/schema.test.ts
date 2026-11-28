@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import {defaults,normalizeGradeSubjects,normalizeRules,normalizeTimePoints,ruleSchema,segments} from './schema.ts';
+import {questionOrderPatch,resolveQuestionOrderMode} from './components/rules/question-order.ts';
 assert.equal(ruleSchema.safeParse({...defaults,allDay:false,windowStart:'',windowEnd:''}).success,false);
 assert.equal(ruleSchema.safeParse({...defaults,allDay:false,windowStart:'18:30',windowEnd:'18:30'}).success,false);
 assert.equal(ruleSchema.safeParse({...defaults,allDay:true,windowStart:'18:30',windowEnd:'18:30'}).success,true);
@@ -24,11 +25,14 @@ for (const bootFreeIntervalMinutes of [-1, 1.5, 1441]) {
   assert.equal(ruleSchema.safeParse({...defaults,bootFreeIntervalMinutes}).success,false);
 }
 const legacy={...defaults} as Record<string,unknown>;
-delete legacy.shuffleOptions;delete legacy.showCountdown;delete legacy.bootFreeIntervalMinutes;
+delete legacy.shuffleOptions;delete legacy.showCountdown;delete legacy.countdownPosition;delete legacy.bootFreeIntervalMinutes;
 const migrated=ruleSchema.parse(legacy);
 assert.equal(migrated.shuffleOptions,false);
 assert.equal(migrated.showCountdown,true);
+assert.equal(migrated.countdownPosition,'top-right');
 assert.equal(migrated.bootFreeIntervalMinutes,0);
+assert.equal(ruleSchema.parse({...defaults,countdownPosition:'bottom-left'}).countdownPosition,'bottom-left');
+assert.equal(ruleSchema.safeParse({...defaults,countdownPosition:'center'}).success,false);
 // #136：旧版本没有「错题优先」，读出来默认关闭
 delete legacy.wrongFirst;
 assert.equal(ruleSchema.parse(legacy).wrongFirst,false);
@@ -112,4 +116,17 @@ assert.deepEqual(
  normalizeRules({gradeSubjects:{'三年级':['英语','英语','']}}).gradeSubjects,
  {'三年级':['英语']}
 );
+// 出题顺序单一选择与底层 3 个兼容布尔位的双向映射（需与 StoreQuestionQuery.kt 优先级一致：wrongFirst > newFirst > coverageFirst）
+assert.equal(resolveQuestionOrderMode(defaults),'coverage');
+assert.equal(resolveQuestionOrderMode({}),'coverage');
+assert.equal(resolveQuestionOrderMode({wrongFirst:true,newFirst:true,coverageFirst:true}),'wrong_first');
+assert.equal(resolveQuestionOrderMode({wrongFirst:false,newFirst:true,coverageFirst:false}),'new_first');
+assert.equal(resolveQuestionOrderMode({wrongFirst:false,newFirst:false,coverageFirst:false}),'random');
+assert.deepEqual(questionOrderPatch('coverage'),{wrongFirst:false,newFirst:false,coverageFirst:true});
+assert.deepEqual(questionOrderPatch('wrong_first'),{wrongFirst:true,newFirst:false,coverageFirst:true});
+assert.deepEqual(questionOrderPatch('new_first'),{wrongFirst:false,newFirst:true,coverageFirst:true});
+assert.deepEqual(questionOrderPatch('random'),{wrongFirst:false,newFirst:false,coverageFirst:false});
+for (const mode of ['coverage','wrong_first','new_first','random'] as const) {
+ assert.equal(resolveQuestionOrderMode(questionOrderPatch(mode)),mode);
+}
 console.log('PASS schedule validation, quotas, rest/review/font bounds, video settings, watch whitelist, question order, study modes and backward-compatible defaults');

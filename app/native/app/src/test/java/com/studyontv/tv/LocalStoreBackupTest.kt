@@ -87,4 +87,50 @@ class LocalStoreBackupTest {
         assertEquals(1, sanitizedKvBa.getJSONArray("sources").length())
         assertEquals("local", sanitizedKvBa.getJSONArray("sources").getJSONObject(0).getString("name"))
     }
+
+    @Test
+    fun sanitizeBackupQuestionMediaSavesLargeLegacyDataUrlAndStripsBrokenRefs() {
+        val dir = java.nio.file.Files.createTempDirectory("sotv-backup-media-test").toFile()
+        try {
+            // 700 KB binary payload exceeds interactive normalizeImageRef's 650 KB limit,
+            // but must be accepted and materialized into /api/media/<sha>.png during backup restore.
+            val largeBytes = ByteArray(700_000) { (it % 251).toByte() }
+            val largeDataUrl = "data:image/png;base64," + java.util.Base64.getEncoder().encodeToString(largeBytes)
+            val largeQ = JSONObject()
+                .put("id", "q_large")
+                .put("q", "看图作答")
+                .put("type", "single")
+                .put("a", JSONArray(listOf("甲", "乙")))
+                .put("k", 0)
+                .put("image", largeDataUrl)
+
+            val (cleanedLarge, strippedLarge) = sanitizeBackupQuestionMedia(largeQ, dir)
+            assertEquals(0, strippedLarge)
+            assertTrue(MediaStore.isMediaPath(cleanedLarge.getString("image")))
+
+            // Broken image/images/optionImages/audio refs must be stripped cleanly without aborting restore.
+            val brokenQ = JSONObject()
+                .put("id", "q_broken")
+                .put("q", "含失效媒体的旧备份题目")
+                .put("type", "single")
+                .put("a", JSONArray(listOf("", "有效选项")))
+                .put("k", 1)
+                .put("image", "file:///sdcard/deleted.png")
+                .put("images", JSONArray(listOf("javascript:alert(1)", "https://example.com/ok.png")))
+                .put("optionImages", JSONArray(listOf("data:image/svg+xml;base64,PHN2Zz4=", "")))
+                .put("audio", "local://broken.mp3")
+
+            val (cleanedBroken, strippedBroken) = sanitizeBackupQuestionMedia(brokenQ, dir)
+            assertEquals(4, strippedBroken)
+            assertEquals("https://example.com/ok.png", cleanedBroken.getString("image"))
+            assertEquals(1, cleanedBroken.getJSONArray("images").length())
+            assertEquals("https://example.com/ok.png", cleanedBroken.getJSONArray("images").getString(0))
+            assertEquals(2, cleanedBroken.getJSONArray("optionImages").length())
+            assertEquals("", cleanedBroken.getJSONArray("optionImages").getString(0))
+            assertEquals("（配图已失效）", cleanedBroken.getJSONArray("a").getString(0))
+            assertEquals("", cleanedBroken.getString("audio"))
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
 }

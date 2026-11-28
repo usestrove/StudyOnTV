@@ -7,22 +7,13 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
-import android.text.InputType
 import android.view.Gravity
-import android.view.KeyEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
-import android.view.inputmethod.EditorInfo
-import android.view.inputmethod.InputMethodManager
 import android.webkit.JavascriptInterface
 import android.webkit.WebView
-import android.widget.EditText
 import android.widget.FrameLayout
-import android.widget.LinearLayout
-import android.widget.ScrollView
-import android.widget.TextView
-import org.json.JSONObject
 
 class GateOverlay(
     private val context: Context,
@@ -33,7 +24,7 @@ class GateOverlay(
     private val manager = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
     private var container: FrameLayout? = null
     private var web: WebView? = null
-    private var inlineInputPanel: View? = null
+    private val inlineInput = GateOverlayInput(context)
     @Volatile private var attached = false
     private var currentReason = ""
     private val remote = RemoteKeys { Bridge().openParent() }
@@ -136,13 +127,19 @@ class GateOverlay(
         val reused = web != null
         val page = gateLearningPage(reason)
         val url = Prefs.localBase(context) + "#/$page"
-        val view = web ?: WebShell(context).create("about:blank").also { created ->
+        val view = web ?: run {
+            val created = WebShell(context).createOrNull("about:blank")
+            if (created == null) {
+                fail("webview-missing", "系统缺少 WebView 组件，无法显示悬浮学习页")
+                return false
+            }
             created.addJavascriptInterface(Bridge(), "SOTVNative")
             created.setOnKeyListener { _, _, event -> remote.handle(created, event) }
             // 老电视（斐讯 T1 等）在 WebView 还没 attach 时就开始加载，挂到悬浮层后容易一直是黑屏。
             // 先创建空的 WebView，addView 成功后再 loadUrl；必要时用软件层兜底。
             if (Build.VERSION.SDK_INT < 26) created.setLayerType(View.LAYER_TYPE_SOFTWARE, null)
             web = created
+            created
         }
         val host = container ?: FrameLayout(context).also { created ->
             created.addView(view, FrameLayout.LayoutParams(-1, -1))
@@ -170,6 +167,7 @@ class GateOverlay(
             if (needLoad) {
                 view.loadUrl(url)
                 view.postDelayed({ try { view.invalidate(); view.requestLayout() } catch (_: Exception) { } }, 350)
+                if (reused) view.evaluateJavascript("window.SOTV_RESUME&&SOTV_RESUME()", null)
             } else view.evaluateJavascript("window.SOTV_RESUME&&SOTV_RESUME()", null)
             view.requestFocus()
             handler.removeCallbacks(verifyVisibility)
@@ -193,7 +191,10 @@ class GateOverlay(
         handler.removeCallbacks(probePageTask)
         dismissInlineInput(notifyCancel = notifyCancel)
         val host = container ?: return
-        if (attached) try { manager.removeViewImmediate(host) } catch (_: Exception) { }
+        if (attached) {
+            try { web?.evaluateJavascript("window.SOTV_PAUSE&&SOTV_PAUSE()", null) } catch (_: RuntimeException) { }
+            try { manager.removeViewImmediate(host) } catch (_: Exception) { }
+        }
         if (attached && !InputSupport.active) MediaPause.release(context)
         if (attached) SpeechReader.stop()
         attached = false
@@ -202,122 +203,15 @@ class GateOverlay(
         attachAt = 0L
     }
 
-    /**
-     * #172：在悬浮层内部直接弹出原生输入框（不拉起 TvTextInputActivity、不卸载悬浮层），
-     * 避免小米电视 S（Android 14）等系统在切 Activity 时触发后台/合规清理导致进程被杀、填空答案丢失。
-     */
     private fun showInlineInput(draft: String, prompt: String, passwordMode: Boolean) {
         val host = container ?: return
         val targetWeb = web ?: return
         if (!attached) return
-        dismissInlineInput(notifyCancel = false)
-        val dp = context.resources.displayMetrics.density
-        val scroll = ScrollView(context).apply {
-            isFillViewport = true
-            isVerticalScrollBarEnabled = false
-            setBackgroundColor(TvUi.background(context))
-            isClickable = true
-        }
-        val panel = LinearLayout(context).apply {
-            orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER_HORIZONTAL
-            setPadding((64 * dp).toInt(), (24 * dp).toInt(), (64 * dp).toInt(), (24 * dp).toInt())
-        }
-        panel.addView(TextView(context).apply {
-            text = if (passwordMode) "家长验证" else "填写答案"
-            textSize = 26f
-            setTextColor(TvUi.foreground(context))
-        })
-        if (prompt.isNotBlank()) {
-            panel.addView(TextView(context).apply {
-                text = prompt.take(200)
-                textSize = 16f
-                setTextColor(TvUi.muted(context))
-                maxLines = 3
-                setPadding(0, (8 * dp).toInt(), 0, (12 * dp).toInt())
-            }, LinearLayout.LayoutParams(-1, -2))
-        }
-        lateinit var edit: EditText
-        fun commit(accepted: Boolean) {
-            val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
-            imm?.hideSoftInputFromWindow(edit.windowToken, 0)
-            val text = edit.text?.toString().orEmpty()
-            dismissInlineInput(notifyCancel = false)
-            if (accepted) {
-                val payload = JSONObject().put("text", text).toString()
-                targetWeb.post {
-                    try { targetWeb.evaluateJavascript("window.SOTV_INPUT&&SOTV_INPUT($payload)", null) } catch (_: Throwable) { }
-                    targetWeb.requestFocus()
-                }
-            } else {
-                targetWeb.post {
-                    try { targetWeb.evaluateJavascript("window.SOTV_INPUT_CANCEL&&SOTV_INPUT_CANCEL()", null) } catch (_: Throwable) { }
-                    targetWeb.requestFocus()
-                }
-            }
-        }
-        edit = EditText(context).apply {
-            hint = if (passwordMode) "输入家长管理密码" else "用遥控器或输入法填写答案，完成后选“确定”"
-            inputType = if (passwordMode) InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
-                else InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
-            imeOptions = EditorInfo.IME_ACTION_DONE or EditorInfo.IME_FLAG_NO_EXTRACT_UI
-            minLines = if (passwordMode) 1 else 2
-            maxLines = if (passwordMode) 1 else 5
-            gravity = Gravity.TOP or Gravity.START
-            TvUi.field(this)
-            setText(draft)
-            setSelection(text.length)
-            setOnEditorActionListener { _, action, _ ->
-                if (action == EditorInfo.IME_ACTION_DONE) { commit(true); true } else false
-            }
-            setOnKeyListener { _, keyCode, event ->
-                if (keyCode == KeyEvent.KEYCODE_BACK && event.action == KeyEvent.ACTION_UP) {
-                    commit(false); true
-                } else false
-            }
-        }
-        panel.addView(edit, LinearLayout.LayoutParams(-1, -2).apply { topMargin = (8 * dp).toInt() })
-        val row = LinearLayout(context).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER
-        }
-        fun addBtn(label: String, primary: Boolean = false, action: () -> Unit) {
-            val btn = TvUi.button(context, label, primary, action)
-            btn.setOnKeyListener { _, keyCode, event ->
-                if (keyCode == KeyEvent.KEYCODE_BACK && event.action == KeyEvent.ACTION_UP) {
-                    commit(false); true
-                } else false
-            }
-            row.addView(btn, LinearLayout.LayoutParams(-2, -2).apply {
-                leftMargin = (8 * dp).toInt(); rightMargin = (8 * dp).toInt()
-            })
-        }
-        addBtn(if (passwordMode) "验证解锁" else "确定", true) { commit(true) }
-        addBtn("清空") { edit.setText("") }
-        addBtn("取消") { commit(false) }
-        panel.addView(row, LinearLayout.LayoutParams(-1, -2).apply { topMargin = (20 * dp).toInt() })
-        scroll.addView(panel, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
-        host.addView(scroll, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
-        inlineInputPanel = scroll
-        edit.requestFocus()
-        edit.post {
-            val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
-            imm?.showSoftInput(edit, InputMethodManager.SHOW_IMPLICIT)
-        }
+        inlineInput.show(host, targetWeb, draft, prompt, passwordMode)
     }
 
     private fun dismissInlineInput(notifyCancel: Boolean) {
-        val panel = inlineInputPanel ?: return
-        inlineInputPanel = null
-        val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
-        val token = panel.findFocus()?.windowToken ?: panel.windowToken
-        if (token != null) imm?.hideSoftInputFromWindow(token, 0)
-        (panel.parent as? ViewGroup)?.removeView(panel)
-        if (notifyCancel) {
-            web?.post {
-                try { web?.evaluateJavascript("window.SOTV_INPUT_CANCEL&&SOTV_INPUT_CANCEL()", null) } catch (_: Throwable) { }
-            }
-        }
+        inlineInput.dismiss(web, notifyCancel)
     }
 
     private val release = Runnable { destroy() }

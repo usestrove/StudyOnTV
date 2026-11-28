@@ -53,21 +53,43 @@ class UpdateInstallReceiver : BroadcastReceiver() {
             Updater.onInstallResult(success = true, message = "安装成功")
             return
         }
-        val text = when (status) {
-            PackageInstaller.STATUS_PENDING_USER_ACTION -> "等待用户确认安装"
-            PackageInstaller.STATUS_FAILURE_ABORTED -> "安装被取消"
-            PackageInstaller.STATUS_FAILURE_BLOCKED -> "系统禁止安装这个应用"
-            PackageInstaller.STATUS_FAILURE_CONFLICT -> "安装包与已安装版本冲突"
-            PackageInstaller.STATUS_FAILURE_INCOMPATIBLE -> "安装包与这台电视的系统不兼容"
-            PackageInstaller.STATUS_FAILURE_INVALID -> "安装包无效或已损坏"
-            PackageInstaller.STATUS_FAILURE_STORAGE -> "电视存储空间不足"
-            else -> "安装失败（状态 $status）"
-        }
-        val detail = if (message.isBlank()) text else "$text：$message"
+        val detail = formatInstallFailure(status, message)
         Diag.error("Install", "install failed status=$status message=$message")
         val trimmed = detail.take(300)
         Prefs.setUpdateInstallError(context, trimmed)
         Prefs.setUpdateInProgress(context, false)
         Updater.onInstallResult(success = false, message = trimmed)
+    }
+
+    companion object {
+        /**
+         * 将 PackageInstaller 状态码与底层 message 映射为家长可读的中文提示。
+         * 国产电视/手机 ROM 在用户取消或未授权安装时常误报 STATUS_FAILURE_INCOMPATIBLE，
+         * 但 message 里带 INSTALL_FAILED_USER_RESTRICTED / INSTALL_CANCELED_BY_USER，
+         * 必须优先按 message 根因归类，避免误导成「系统不兼容」。
+         */
+        internal fun formatInstallFailure(status: Int, message: String): String {
+            val clean = message.trim()
+            val upper = clean.uppercase(java.util.Locale.US)
+            val text = when {
+                upper.contains("INSTALL_CANCELED_BY_USER") || upper.contains("USER REJECTED") ->
+                    "安装已取消或未授予安装权限"
+                upper.contains("INSTALL_FAILED_USER_RESTRICTED") ->
+                    "系统限制了应用安装，请在系统设置中允许安装未知来源应用"
+                upper.contains("PERMISSION DENIED") ->
+                    "没有安装权限，请先在系统设置中允许安装未知来源应用"
+                else -> when (status) {
+                    PackageInstaller.STATUS_PENDING_USER_ACTION -> "等待用户确认安装"
+                    PackageInstaller.STATUS_FAILURE_ABORTED -> "安装被取消"
+                    PackageInstaller.STATUS_FAILURE_BLOCKED -> "系统禁止安装这个应用"
+                    PackageInstaller.STATUS_FAILURE_CONFLICT -> "安装包与已安装版本冲突"
+                    PackageInstaller.STATUS_FAILURE_INCOMPATIBLE -> "安装包与当前设备系统不兼容"
+                    PackageInstaller.STATUS_FAILURE_INVALID -> "安装包无效或已损坏"
+                    PackageInstaller.STATUS_FAILURE_STORAGE -> "设备存储空间不足"
+                    else -> "安装失败（状态 $status）"
+                }
+            }
+            return if (clean.isEmpty()) text else "$text：$clean"
+        }
     }
 }

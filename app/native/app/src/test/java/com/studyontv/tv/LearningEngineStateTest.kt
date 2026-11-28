@@ -186,4 +186,64 @@ class LearningEngineStateTest {
         }.timeInMillis
         assertEquals(expectedTomorrow, LearningEngine.findNextAvailableSlotMillis(slots, nowCal.timeInMillis, tomorrow = true, timeZone = utc, dayIndexOf = dayOfWeekIndex))
     }
+
+    @Test
+    fun planUsageDeductionRemovesFiveSecondCapAndSpillsRemainderToCredit() {
+        // 大步长 12_000ms 与 25_000ms 不再被 5 秒硬截断
+        val creditOnly12s = LearningEngine.planUsageDeduction(
+            requestedMs = 12_000L,
+            availableMs = 600_000L,
+            freeQuotaMs = 0L,
+            bootQuotaMs = 0L,
+            creditMs = 600_000L
+        )
+        assertEquals(0L, creditOnly12s.freeQuotaConsumed)
+        assertEquals(0L, creditOnly12s.bootQuotaConsumed)
+        assertEquals(12_000L, creditOnly12s.creditConsumed)
+        assertEquals(12_000L, creditOnly12s.totalConsumed)
+
+        val creditOnly25s = LearningEngine.planUsageDeduction(
+            requestedMs = 25_000L,
+            availableMs = 600_000L,
+            freeQuotaMs = 0L,
+            bootQuotaMs = 0L,
+            creditMs = 600_000L
+        )
+        assertEquals(25_000L, creditOnly25s.creditConsumed)
+        assertEquals(25_000L, creditOnly25s.totalConsumed)
+
+        // freeQuota 耗尽后，余数无缝继续扣减 bootQuota 与 credit_ms（不丢尾数）
+        val spillover = LearningEngine.planUsageDeduction(
+            requestedMs = 25_000L,
+            availableMs = 600_000L,
+            freeQuotaMs = 4_000L,
+            bootQuotaMs = 3_000L,
+            creditMs = 50_000L
+        )
+        assertEquals(4_000L, spillover.freeQuotaConsumed)
+        assertEquals(3_000L, spillover.bootQuotaConsumed)
+        assertEquals(18_000L, spillover.creditConsumed)
+        assertEquals(25_000L, spillover.totalConsumed)
+
+        // 受 availableMs 与 MAX_SINGLE_CONSUME_MS 双重安全封顶
+        val cappedByMax = LearningEngine.planUsageDeduction(
+            requestedMs = LearningEngine.MAX_SINGLE_CONSUME_MS + 60_000L,
+            availableMs = LearningEngine.MAX_SINGLE_CONSUME_MS * 2,
+            freeQuotaMs = 0L,
+            bootQuotaMs = 0L,
+            creditMs = LearningEngine.MAX_SINGLE_CONSUME_MS * 2
+        )
+        assertEquals(LearningEngine.MAX_SINGLE_CONSUME_MS, cappedByMax.totalConsumed)
+
+        val cappedByAvailable = LearningEngine.planUsageDeduction(
+            requestedMs = 25_000L,
+            availableMs = 10_000L,
+            freeQuotaMs = 6_000L,
+            bootQuotaMs = 0L,
+            creditMs = 50_000L
+        )
+        assertEquals(6_000L, cappedByAvailable.freeQuotaConsumed)
+        assertEquals(4_000L, cappedByAvailable.creditConsumed)
+        assertEquals(10_000L, cappedByAvailable.totalConsumed)
+    }
 }

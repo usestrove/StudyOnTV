@@ -127,12 +127,14 @@ object BugFixRegression {
 
     // ------------------------------------------- #148 计时补算 / 不计时白名单
     private fun watchAndWhitelist(context: Context) {
-        // 进程被杀期间：只补「设备醒着」的空档，重启、太短、太长都不补
+        // 进程被杀期间：只补「设备醒着」的空档；重启、太短不补；超上限按封顶补算不再归零
         check(WatchGap.recoverMs(100_000, 100_000, 130_000, 130_000) == 30_000L)
         check(WatchGap.recoverMs(100_000, 100_000, 130_000, 200_000) == 30_000L) { "深睡时间不能算作观看" }
         check(WatchGap.recoverMs(100_000, 100_000, 30_000, 100_000) == 0L) { "设备重启后不能补算" }
-        check(WatchGap.recoverMs(100_000, 100_000, 103_000, 103_000) == 0L) { "空档太小不补" }
-        check(WatchGap.recoverMs(100_000, 100_000, 100_000 + 11 * 60_000, 100_000 + 11 * 60_000) == 0L) { "空档太大不补" }
+        check(WatchGap.recoverMs(100_000, 100_000, 101_000, 101_000) == 0L) { "空档太小不补" }
+        check(WatchGap.recoverMs(100_000, 100_000, 102_000, 102_000) == 2_000L) { "2 秒空档应补算" }
+        check(WatchGap.recoverMs(100_000, 100_000, 100_000 + 22 * 60_000, 100_000 + 22 * 60_000) == 22 * 60_000L) { "22 分钟空档应完整补算" }
+        check(WatchGap.recoverMs(100_000, 100_000, 100_000 + 90 * 60_000, 100_000 + 90 * 60_000) == WatchGap.MAX_RECOVER_MS) { "超上限按封顶补算" }
         check(WatchGap.recoverMs(0, 0, 100_000, 100_000) == 0L)
 
         check(WatchWhitelist.normalize(listOf(" com.example.app ", "com.example.app", "")) == listOf("com.example.app"))

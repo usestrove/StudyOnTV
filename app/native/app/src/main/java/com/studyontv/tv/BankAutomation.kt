@@ -14,8 +14,42 @@ object BankAutomation {
     private val worker = Executors.newSingleThreadExecutor()
     private val running = AtomicBoolean(false)
     private var checkedAt = 0L
+    @Volatile private var autoAiFailureCount = 0
+    @Volatile private var autoAiNextRetryAt = 0L
+    @Volatile private var autoAiPausedFingerprint = ""
+    private const val TICK_INTERVAL_MS = 15 * 60_000L
+    private const val MAX_AI_BACKOFF_MS = 4 * 60 * 60_000L
     private fun hash(value: String) = MessageDigest.getInstance("SHA-256").digest(value.toByteArray())
         .take(12).joinToString("") { "%02x".format(it.toInt() and 255) }
+
+    /**
+     * 区分「配置/鉴权/余额等不可自愈的失败」与「临时网络抖动」：
+     * 401/402/404/未配置等错误不会靠每 15 分钟死磕自愈，在家长改配置或手动触发前暂停自动重试。
+     */
+    internal fun isPermanentAutoAiFailure(e: Throwable): Boolean {
+        val msg = e.message.orEmpty()
+        return msg.contains("API Key 无效") ||
+            msg.contains("余额不足") ||
+            msg.contains("HTTP 404") ||
+            msg.contains("未配置") ||
+            msg.contains("请先填写") ||
+            msg.contains("仅本地隐私版")
+    }
+
+    internal fun computeAutoAiBackoffMs(consecutiveFailures: Int): Long {
+        if (consecutiveFailures <= 0) return 0L
+        val shift = (consecutiveFailures - 1).coerceAtMost(4)
+        return (TICK_INTERVAL_MS shl shift).coerceAtMost(MAX_AI_BACKOFF_MS)
+    }
+
+    private fun aiConfigFingerprint(store: LocalStore): String =
+        hash(store.get("grading_settings", "{}") + "|" + store.get("bank_automation", "{}"))
+
+    internal fun resetAutoAiCircuit() {
+        autoAiFailureCount = 0
+        autoAiNextRetryAt = 0L
+        autoAiPausedFingerprint = ""
+    }
     /** AI 补题可选题型（#125：电视上填空题输入麻烦，家长可以只补单选题） */
     private val QUESTION_TYPES = listOf("single", "multiple", "boolean", "text", "subjective")
     /** 老版本写死的题型，配置里没有 types 时沿用，避免升级后出题行为突然变化 */
@@ -97,17 +131,19 @@ object BankAutomation {
         store.set("bank_automation", JSONObject().put("sources", clean).put("autoAi", input.optBoolean("autoAi"))
             .put("minimum", minimum).put("batch", batch).put("masteryAttempts", attempts).put("masteryAccuracy", accuracy)
             .put("topic", topic).put("types", JSONArray(saved)).toString())
+        resetAutoAiCircuit()
         return settings(store)
     }
 
     @Synchronized fun tick(store: LocalStore) {
         val now = android.os.SystemClock.elapsedRealtime()
-        if (checkedAt > 0 && now - checkedAt < 15 * 60000) return
+        if (checkedAt > 0 && now - checkedAt < TICK_INTERVAL_MS) return
         checkedAt = now
-        start(store)
+        start(store, manual = false)
     }
 
-    fun start(store: LocalStore) {
+    fun start(store: LocalStore, manual: Boolean = true) {
+        if (manual) resetAutoAiCircuit()
         if (!running.compareAndSet(false, true)) return
         worker.execute {
             val report = JSONObject().put("at", System.currentTimeMillis())
@@ -129,29 +165,50 @@ object BankAutomation {
                 }
                 report.put("sources", results)
                 if (config.optBoolean("autoAi")) {
-                    val all = store.questions(limit = 50000)
-                    val mastered = mutableListOf<String>()
-                    for (i in 0 until all.length()) {
-                        val q = all.getJSONObject(i); val stats = q.optJSONObject("stats") ?: continue
-                        val answered = stats.optInt("answered")
-                        if (answered >= config.optInt("masteryAttempts", 5) && stats.optInt("correct") * 100 >= answered * config.optInt("masteryAccuracy", 90)) mastered.add(q.getString("id"))
+                    val fp = aiConfigFingerprint(store)
+                    val now = android.os.SystemClock.elapsedRealtime()
+                    val pausedByConfig = !manual && autoAiPausedFingerprint.isNotEmpty() && autoAiPausedFingerprint == fp
+                    val inBackoff = !manual && autoAiNextRetryAt > now
+                    if (pausedByConfig) {
+                        val prevMsg = try { JSONObject(store.get("bank_automation_status", "{}")).optString("message") } catch (_: Exception) { "" }
+                        report.put("ok", false).put("paused", true)
+                            .put("message", prevMsg.ifEmpty { "自动补题已暂停，请修正模型 API 配置后点击「立即同步 / 补题」" })
+                        return@execute
                     }
-                    if (mastered.isNotEmpty()) pauseQuestionsHandler(store, mastered)
-                    report.put("pausedMastered", mastered.size)
-                    if (store.countQuestions() < config.optInt("minimum", 30)) {
-                        val result = GradingService.generateQuestions(store, JSONObject().put("topic", config.getString("topic"))
-                            .put("count", config.optInt("batch", 10))
-                            .put("types", config.optJSONArray("types")?.takeIf { it.length() > 0 } ?: JSONArray(LEGACY_TYPES))
-                            .put("difficulty", "mixed").put("withTip", true).put("skipDuplicates", true))
-                        val items = result.getJSONArray("items")
-                        for (i in 0 until items.length()) items.getJSONObject(i).put("bank", "AI补题")
-                        if (items.length() > 0) store.importQuestions(items)
-                        report.put("generated", items.length())
+                    if (!inBackoff) {
+                        val all = store.questions(limit = 50000)
+                        val mastered = mutableListOf<String>()
+                        for (i in 0 until all.length()) {
+                            val q = all.getJSONObject(i); val stats = q.optJSONObject("stats") ?: continue
+                            val answered = stats.optInt("answered")
+                            if (answered >= config.optInt("masteryAttempts", 5) && stats.optInt("correct") * 100 >= answered * config.optInt("masteryAccuracy", 90)) mastered.add(q.getString("id"))
+                        }
+                        if (mastered.isNotEmpty()) pauseQuestionsHandler(store, mastered)
+                        report.put("pausedMastered", mastered.size)
+                        if (store.countQuestions() < config.optInt("minimum", 30)) {
+                            val result = GradingService.generateQuestions(store, JSONObject().put("topic", config.getString("topic"))
+                                .put("count", config.optInt("batch", 10))
+                                .put("types", config.optJSONArray("types")?.takeIf { it.length() > 0 } ?: JSONArray(LEGACY_TYPES))
+                                .put("difficulty", "mixed").put("withTip", true).put("skipDuplicates", true))
+                            val items = result.getJSONArray("items")
+                            for (i in 0 until items.length()) items.getJSONObject(i).put("bank", "AI补题")
+                            if (items.length() > 0) store.importQuestions(items)
+                            report.put("generated", items.length())
+                        }
+                        resetAutoAiCircuit()
                     }
                 }
                 report.put("ok", true)
             } catch (e: Exception) {
                 Diag.warn("BankAuto", "autoAi failed: ${e.javaClass.simpleName}: ${e.message}")
+                if (isPermanentAutoAiFailure(e)) {
+                    autoAiPausedFingerprint = aiConfigFingerprint(store)
+                    autoAiFailureCount++
+                    report.put("paused", true)
+                } else {
+                    autoAiFailureCount++
+                    autoAiNextRetryAt = android.os.SystemClock.elapsedRealtime() + computeAutoAiBackoffMs(autoAiFailureCount)
+                }
                 report.put("ok", false).put("message", formatFailureMessage("自动补题失败", "已有题目保留", e))
             }
             finally { store.set("bank_automation_status", report.toString()); running.set(false) }

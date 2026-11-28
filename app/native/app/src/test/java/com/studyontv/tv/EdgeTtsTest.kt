@@ -176,4 +176,38 @@ class EdgeTtsTest {
         val ordered = EdgeTts.orderAddressesIpv4First(listOf(v6, v4a, v4b))
         assertEquals(listOf(v4a, v4b, v6), ordered)
     }
+
+    @Test
+    fun resolveEffectiveVoiceSwitchesEnglishVoiceToMultilingualWhenTextHasChinese() {
+        // 英文题的中文解析（language=en-US）不能用纯英文音色 en-US-JennyNeural，否则微软返回 0 字节空音频
+        assertEquals(
+            "zh-CN-XiaoxiaoNeural",
+            EdgeTts.resolveEffectiveVoice("解析：这道题考察一般过去时 went。", "", "en-US")
+        )
+        assertEquals(
+            "zh-CN-XiaoxiaoNeural",
+            EdgeTts.resolveEffectiveVoice("选出苹果的英文：apple", "en-GB-SoniaNeural", "en-GB")
+        )
+        // 纯英文文本保持英文音色
+        assertEquals(
+            "en-US-JennyNeural",
+            EdgeTts.resolveEffectiveVoice("She went to school yesterday.", "", "en-US")
+        )
+        assertEquals(
+            "en-GB-SoniaNeural",
+            EdgeTts.resolveEffectiveVoice("Hello world 123", "en-GB-SoniaNeural", "en-US")
+        )
+        // 中文音色原样保留
+        assertEquals(
+            "zh-CN-YunxiNeural",
+            EdgeTts.resolveEffectiveVoice("apple 苹果", "zh-CN-YunxiNeural", "en-US")
+        )
+    }
+
+    @Test
+    fun hasSpeakableContentRejectsPurePunctuationAndBlanks() {
+        assertTrue(!EdgeTts.hasSpeakableContent("   ____ ... ?!  "))
+        assertTrue(EdgeTts.hasSpeakableContent("A"))
+        assertTrue(EdgeTts.hasSpeakableContent("解析：3+5=8"))
+    }
 }

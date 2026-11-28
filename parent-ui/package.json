@@ -6,7 +6,7 @@
   "scripts": {
     "build": "node prepare-assets.mjs && tsc --noEmit && vite build",
     "dev": "node prepare-assets.mjs && vite --host 127.0.0.1",
-    "test": "tsc --noEmit && node --experimental-strip-types src/schema.test.ts && node --experimental-strip-types src/document-import.test.ts && node --experimental-strip-types src/question-import.test.ts && node --experimental-strip-types src/keepalive.test.ts && node --experimental-strip-types src/open-play.test.ts && node --experimental-strip-types src/rich-text.test.ts"
+    "test": "tsc --noEmit && node --experimental-strip-types src/schema.test.ts && node --experimental-strip-types src/document-import.test.ts && node --experimental-strip-types src/question-import.test.ts && node --experimental-strip-types src/keepalive.test.ts && node --experimental-strip-types src/open-play.test.ts && node --experimental-strip-types src/rich-text.test.ts && node repo-guard.mjs"
   },
   "dependencies": {
     "@hookform/resolvers": "3.10.0",

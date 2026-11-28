@@ -93,6 +93,14 @@ object ApkInstaller {
         else -> null
     }
 
+    internal fun packageMismatchError(currentPkg: String, archivePkg: String): String? {
+        if (archivePkg == currentPkg) return null
+        if (currentPkg.endsWith(".debug") && archivePkg == currentPkg.removeSuffix(".debug")) {
+            return "当前为开发调试版（$currentPkg），无法直接用正式版（$archivePkg）在线覆盖升级，请直接安装正式版 APK"
+        }
+        return "安装包与本应用不符（当前 $currentPkg，安装包 $archivePkg）"
+    }
+
     /** 包名一致、版本更高、签名与当前安装的版本一致（无副作用，返回错误文案，null 表示通过） */
     @Suppress("DEPRECATION")
     private fun validateArchive(ctx: Context, file: File): String? {
@@ -104,7 +112,7 @@ object ApkInstaller {
         val archive = ctx.packageManager.getPackageArchiveInfo(file.absolutePath, flags) ?: return "安装包损坏或不完整"
         archive.applicationInfo?.let { it.sourceDir = file.absolutePath; it.publicSourceDir = file.absolutePath }
         val current = ctx.packageManager.getPackageInfo(ctx.packageName, flags)
-        if (archive.packageName != ctx.packageName) return "安装包与本应用不符"
+        packageMismatchError(ctx.packageName, archive.packageName.orEmpty())?.let { return it }
         if (archive.versionCode <= current.versionCode) return "安装包版本不比当前新"
         val mine = signatures(current)
         val theirs = signatures(archive).ifEmpty { jarSignatures(file) }
@@ -252,8 +260,23 @@ object ApkInstaller {
             return false
         }
         GateService.allowInstallPage()
-        if (installSession(ctx, file)) return true
+        if (confirmInstallActivityAvailable(ctx) && installSession(ctx, file)) return true
         return installView(ctx, file)
+    }
+
+    /**
+     * 会话 commit 会让系统 force-stop 当前应用；ROM 缺少 CONFIRM_INSTALL 确认页时，
+     * 事后再退回 ACTION_VIEW，provider 的临时授权已经随 force-stop 清空（#201）。
+     * 因此 commit 前先确认系统能展示确认页；探测异常时直接走 ACTION_VIEW，至少不会先提交会话。
+     */
+    internal fun confirmProbeResult(resolve: () -> Boolean): Boolean = try {
+        resolve()
+    } catch (_: Exception) {
+        false
+    }
+
+    private fun confirmInstallActivityAvailable(ctx: Context): Boolean = confirmProbeResult {
+        ctx.packageManager.resolveActivity(Intent(ACTION_CONFIRM_INSTALL), android.content.pm.PackageManager.MATCH_SYSTEM_ONLY) != null
     }
 
     /** Android 8+ 需要「允许安装未知应用」；Device Owner 或更老的版本直接放行 */
@@ -342,4 +365,7 @@ object ApkInstaller {
     }
 
     const val ACTION_INSTALL_RESULT = "com.studyontv.tv.INSTALL_RESULT"
+
+    // PackageInstaller.ACTION_CONFIRM_INSTALL 是系统隐藏 API，这里按 Android 源码中的固定 action 字符串探测
+    private const val ACTION_CONFIRM_INSTALL = "android.content.pm.action.CONFIRM_INSTALL"
 }

@@ -15,7 +15,8 @@ import {InputGroup,InputGroupAddon,InputGroupButton,InputGroupInput} from '@/com
 import {Tabs,TabsContent,TabsList,TabsTrigger} from '@/components/ui/tabs';
 import {Sidebar,SidebarContent,SidebarFooter,SidebarGroup,SidebarGroupLabel,SidebarHeader,SidebarInset,SidebarMenu,SidebarMenuBadge,SidebarMenuButton,SidebarMenuItem,SidebarProvider,SidebarRail,SidebarTrigger,useSidebar} from '@/components/ui/sidebar';
 import {DropdownMenu,DropdownMenuContent,DropdownMenuItem,DropdownMenuLabel,DropdownMenuSeparator,DropdownMenuTrigger,DropdownMenuRadioGroup,DropdownMenuRadioItem} from '@/components/ui/dropdown-menu';
-import {api,getHost,setHost,setToken,enablePreview,SESSION_STORAGE_KEY} from './api';
+import {api,getHost,setHost,setToken,enablePreview} from './api';
+import {forgetHostSession,getRememberPreference,getSavedTokenForHost,restoreInitialSession,saveHostSession,setRememberPreference} from './session-storage';
 import RemotePage from './RemotePage';
 import DevicePanel from './DevicePanel';
 import SpeechSettings from './SpeechSettings';
@@ -88,7 +89,7 @@ const searchEntries:SearchEntry[]=[
  {id:'set-speech-auto',page:'settings',section:'speech',where:'设置 · 朗读',title:'自动朗读题目',keywords:'朗读 自动 开关 题目',anchor:'setting-auto-read'},
  {id:'set-speech-scope',page:'settings',section:'speech',where:'设置 · 朗读',title:'朗读内容（题目 / 选项 / 答案）',keywords:'朗读 内容 范围 选项 答案 题目 读什么',anchor:'setting-read-scope'},
  {id:'set-speech-language',page:'settings',section:'speech',where:'设置 · 朗读',title:'朗读语言',keywords:'朗读 语言 粤语 普通话 英语 系统语言'},
- {id:'set-speech-mode',page:'settings',section:'speech',where:'设置 · 朗读',title:'朗读通路与语音识别',keywords:'朗读 通路 引擎 音色 deepseek azure 阿里云 语音识别 转写 密钥'},
+ {id:'set-speech-mode',page:'settings',section:'speech',where:'设置 · 朗读',title:'朗读声音来源与语音识别',keywords:'朗读 声音 来源 通路 引擎 音色 deepseek azure 阿里云 语音识别 转写 密钥'},
  {id:'set-keepalive',page:'settings',section:'keepalive',where:'设置 · 后台保活',title:'开机自启与后台保活',keywords:'开机 自启 后台 保活 电池 优化 权限 悬浮窗 无障碍 小米 tcl 华为'},
  {id:'set-display',page:'settings',section:'display',where:'设置 · 界面与反馈',title:'界面、学习页字号与反馈',keywords:'界面 主题 深色 字号 字体 反馈 学习页 显示'},
  {id:'set-update',page:'settings',section:'update',where:'设置 · 版本更新',title:'检查更新',keywords:'更新 升级 版本 检查 下载 apk 蒲公英'},
@@ -100,12 +101,12 @@ const searchEntries:SearchEntry[]=[
  {id:'home',page:'remote',where:'首页 · 设备管理',title:'今日概览与学习模式切换',keywords:'首页 概览 纯粹学习 提分 免锁屏 剩余时间 使用状态 今天 控制'},
  {id:'home-unlock',page:'remote',where:'首页 · 设备控制',title:'临时解锁 / 暂停使用 / 关闭管控',keywords:'解锁 临时 加时 暂停 关闭管控 恢复 锁屏 调整剩余时间'},
  {id:'home-history',page:'remote',where:'首页 · 学习记录',title:'近期学习记录',keywords:'学习记录 使用时间 每天 记录 近期'},
- {id:'rules',page:'rules',where:'学习计划',title:'学习计划（先背再测、间隔重复、时段）',keywords:'计划 规则 学习 任务 先背再测 闪卡'},
- {id:'rules-task',page:'rules',where:'学习计划 · 任务',title:'每组题量、先背再测、答题奖励',keywords:'题量 每题 奖励 分钟 通过 一组 正确率 组数 先背再测'},
+ {id:'rules',page:'rules',where:'学习计划',title:'学习计划（答题奖励、出题顺序、自动复习、时段）',keywords:'计划 规则 学习 任务 先背再测 闪卡 间隔重复 顺序'},
+ {id:'rules-task',page:'rules',where:'学习计划 · 任务',title:'每组题量、先背再测、答题奖励与倒计时位置',keywords:'题量 每题 奖励 分钟 通过 一组 正确率 组数 先背再测 倒计时 角标 位置 右上角 左上角'},
  {id:'rules-time',page:'rules',where:'学习计划 · 时段',title:'可用时段、网课时段、休息',keywords:'时段 时间 网课 休息 睡眠 晚上 可用 周一 周二 节假日'},
- {id:'rules-scope',page:'rules',where:'学习计划 · 范围',title:'年级、科目与题库范围',keywords:'年级 科目 范围 题库 难度 出题 顺序'},
- {id:'rules-more',page:'rules',where:'学习计划 · 记忆与加练',title:'艾宾浩斯间隔重复、只背错题、加练',keywords:'加练 错题 复习 记忆曲线 anki 只背错题 密码 解锁'},
- {id:'rules-guard-settings',page:'rules',where:'学习计划 · 高级',title:'拦截系统设置与应用管理（防卸载加固）',keywords:'防卸载 卸载 系统设置 应用管理 手机管家 拦截 密码'},
+ {id:'rules-scope',page:'rules',where:'学习计划 · 出题范围与顺序',title:'出题顺序、年级、科目与题库范围',keywords:'年级 科目 范围 题库 难度 出题 顺序 新题 错题 旧题 随机 刷一遍'},
+ {id:'rules-more',page:'rules',where:'学习计划 · 复习与加练',title:'到点自动复习旧题、答错自动加练',keywords:'加练 错题 复习 记忆曲线 anki 间隔重复 只背错题 密码 解锁'},
+ {id:'rules-guard-settings',page:'rules',where:'学习计划 · 时间与防护',title:'防孩子进「系统设置」卸载或改时间',keywords:'防卸载 卸载 系统设置 应用管理 手机管家 拦截 密码'},
  {id:'bank',page:'bank',where:'题库',title:'题目列表与筛选',keywords:'题库 题目 搜索 筛选 暂停 难度 科目'},
  {id:'bank-import',page:'bank',where:'题库 · 导入导出',title:'导入 / 导出题目',keywords:'导入 json 文档 导出 备份 添加题目'},
  {id:'bank-ai',page:'bank',where:'题库 · AI 出题',title:'AI 错题举一反三与模板出题',keywords:'ai 出题 生成 变式 错题 举一反三 在线题库 市场 共享题库'},
@@ -132,18 +133,12 @@ const searchHits=(query:string,localOnly=false)=>{
   .map(hit=>hit.entry);
 };
 
-/* ---------- 记住登录：保存在本机浏览器，30 天有效；断开连接后失效 ---------- */
-function saveSession(host:string,token:string){try{localStorage.setItem(SESSION_STORAGE_KEY,JSON.stringify({host,token}));}catch{}}
-function forgetSession(){try{localStorage.removeItem(SESSION_STORAGE_KEY);}catch{}}
 function restoreSession():boolean{
+ const restored=restoreInitialSession();
+ if(!restored)return false;
  try{
-  const v=JSON.parse(localStorage.getItem(SESSION_STORAGE_KEY)||'null');
-  if(!v?.token||!v?.host)return false;
-  // 面板由被控设备直接提供时（非本地 Vite 5173 调试端，且原本也是连同源或未显式指定远程 HTTPS），以当前地址为准
-  const isDevServer=location.port==='5173';
-  const isServedByDevice=!isDevServer&&location.protocol.startsWith('http')&&!!location.host&&!/^https:\/\//i.test(v.host)&&location.pathname.startsWith('/admin');
-  setHost(isServedByDevice?location.host:v.host);
-  setToken(v.token);
+  setHost(restored.host);
+  setToken(restored.token,false);
   return true;
  }catch{return false;}
 }
@@ -158,12 +153,12 @@ function ThemeSwitch({theme,setTheme}:{theme:Theme,setTheme:(t:Theme)=>void}){re
 function parseHash():{page:PageId,section:SectionId}{const [p,s]=location.hash.replace(/^#\/?/,'').split('/');return{page:(pages.some(x=>x.id===p)?p:'remote') as PageId,section:(sections.some(x=>x.id===s)?s:'device') as SectionId};}
 function useRoute(){const[route,set]=useState(parseHash);useEffect(()=>{const on=()=>{set(parseHash());window.scrollTo({top:0});};window.addEventListener('hashchange',on);return()=>window.removeEventListener('hashchange',on);},[]);return{...route,go:(page:PageId,section?:SectionId)=>{location.hash='/'+page+(section?'/'+section:'');}};}
 
-function App(){const[session,setSession]=useState(()=>restoreSession()?1:0),[next,setNext]=useState(2);const theme=useTheme();function logout(remote=true){if(remote)api('/api/logout','POST',{}).catch(()=>{});setToken('');forgetSession();setSession(0);client.clear();}function switchHost(targetHost:string,name?:string){try{setHost(targetHost);setToken('');forgetSession();client.clear();setSession(0);toast.message(`已切换到 ${name||targetHost}，请输入管理密码登录`);}catch(e:any){toast.error(e?.message||'切换设备失败');}}useEffect(()=>{const handler=()=>{logout(false);toast.error('登录已失效，请重新验证管理密码');};window.addEventListener('session-expired',handler);return()=>window.removeEventListener('session-expired',handler);},[]);return <><Toaster richColors position="top-center" theme={theme.theme}/><InstallPrompt enabled={session!==0}/>{session?<Dashboard sessionId={session} logout={logout} onSwitchHost={switchHost} theme={theme}/>:<Login onLogin={()=>{setSession(next);setNext(n=>n+1);}} theme={theme}/>}</>}
+function App(){const[session,setSession]=useState(()=>restoreSession()?1:0),[next,setNext]=useState(2);const theme=useTheme();function logout(remote=true){if(remote)api('/api/logout','POST',{}).catch(()=>{});forgetHostSession(getHost());setToken('',false);setSession(0);client.clear();}function switchHost(targetHost:string,name?:string){try{setHost(targetHost);const saved=getSavedTokenForHost(getHost());client.clear();if(saved){setToken(saved,false);setSession(next);setNext(n=>n+1);toast.success(`已切换到 ${name||targetHost}`);}else{setToken('',false);setSession(0);toast.message(`已切换到 ${name||targetHost}，请输入管理密码登录`);}}catch(e:any){toast.error(e?.message||'切换设备失败');}}useEffect(()=>{const handler=()=>{logout(false);toast.error('登录已失效，请重新验证管理密码');};window.addEventListener('session-expired',handler);return()=>window.removeEventListener('session-expired',handler);},[]);return <><Toaster richColors position="top-center" theme={theme.theme}/><InstallPrompt enabled={session!==0}/>{session?<Dashboard sessionId={session} logout={logout} onSwitchHost={switchHost} theme={theme}/>:<Login onLogin={()=>{setSession(next);setNext(n=>n+1);}} theme={theme}/>}</>}
 
 function Login({onLogin,theme}:{onLogin:()=>void,theme:ReturnType<typeof useTheme>}){
- const[host,updateHost]=useState(getHost()),[secret,setSecret]=useState(''),[busy,setBusy]=useState(false),[error,setError]=useState('');
- const[visible,setVisible]=useState(false),[accepted,setAccepted]=useState(true),[crashReports,setCrashReports]=useState(false),[crashTouched,setCrashTouched]=useState(false),[docType,setDocType]=useState<'terms'|'privacy'|null>(null);
- async function submit(e:any){e.preventDefault();if(busy)return;setError('');if(!accepted)return setError('请先同意使用说明和隐私条款');if(!secret)return setError('请输入管理密码');if(secret.length<6)return setError('管理密码至少 6 位');setBusy(true);try{setHost(host);const result=await api('/api/auth','POST',{passphrase:secret,remember:true});setToken(result.token);saveSession(getHost(),result.token);if(crashTouched&&!result?.localOnly){const deviceInfo=await api('/api/device').catch(()=>null);if(!deviceInfo?.localOnly){await api('/api/device/crash','PUT',{consent:crashReports}).catch(()=>{});}}setSecret('');onLogin();}catch(e:any){setError(e.message==='Failed to fetch'?'无法连接设备，请检查设备地址和 WiFi':e.message);}finally{setBusy(false);}}
+ const[host,updateHost]=useState(getHost()),[secret,setSecret]=useState(''),[remember,setRemember]=useState(()=>getRememberPreference()),[busy,setBusy]=useState(false),[error,setError]=useState('');
+ const[visible,setVisible]=useState(false),[accepted,setAccepted]=useState(true),[crashReports,setCrashReports]=useState(true),[crashTouched,setCrashTouched]=useState(false),[docType,setDocType]=useState<'terms'|'privacy'|null>(null);
+ async function submit(e:any){e.preventDefault();if(busy)return;setError('');if(!accepted)return setError('请先同意使用说明和隐私条款');if(!secret)return setError('请输入管理密码');if(secret.length<6)return setError('管理密码至少 6 位');setBusy(true);try{setHost(host);setRememberPreference(remember);const result=await api('/api/auth','POST',{passphrase:secret,remember});setToken(result.token,false);saveHostSession(getHost(),result.token,remember);if(crashTouched&&!result?.localOnly){const deviceInfo=await api('/api/device').catch(()=>null);if(!deviceInfo?.localOnly){await api('/api/device/crash','PUT',{consent:crashReports}).catch(()=>{});}}setSecret('');onLogin();}catch(e:any){setError(e.message==='Failed to fetch'?'无法连接设备，请检查设备地址和 WiFi':e.message);}finally{setBusy(false);}}
  return <main className="relative min-h-svh overflow-hidden bg-background">
   <div aria-hidden className="pointer-events-none absolute inset-0 bg-[linear-gradient(to_right,color-mix(in_oklab,var(--border)_45%,transparent)_1px,transparent_1px),linear-gradient(to_bottom,color-mix(in_oklab,var(--border)_45%,transparent)_1px,transparent_1px)] bg-[size:56px_56px] [mask-image:linear-gradient(to_bottom,black,transparent_78%)]"/>
   <header className="relative z-10 mx-auto flex h-16 w-full max-w-6xl items-center justify-between px-4 md:px-6"><div className="flex items-center gap-2 text-sm font-semibold"><span className="brand-icon size-8"><Leaf className="size-4"/></span><span>题了个题</span></div><ThemeSwitch {...theme}/></header>
@@ -200,6 +195,10 @@ function Login({onLogin,theme}:{onLogin:()=>void,theme:ReturnType<typeof useThem
        </Field>
        <FieldGroup className="gap-3 pt-1">
         <Field orientation="horizontal" className="items-start gap-3">
+         <Checkbox id="login-remember" className="mt-0.5" checked={remember} onCheckedChange={value=>setRemember(value===true)}/>
+         <FieldContent><FieldLabel htmlFor="login-remember" className="font-normal">记住登录状态（30 天免密码）</FieldLabel></FieldContent>
+        </Field>
+        <Field orientation="horizontal" className="items-start gap-3">
          <Checkbox id="login-accepted" className="mt-0.5" checked={accepted} onCheckedChange={value=>setAccepted(value===true)}/>
          <FieldContent>
           <div className="flex flex-wrap items-center gap-x-1 gap-y-0.5 text-sm"><FieldLabel htmlFor="login-accepted" className="font-normal">我已阅读并同意</FieldLabel><Button type="button" variant="link" className="h-auto p-0 text-sm" onClick={()=>setDocType('terms')}>《使用说明》</Button><span className="text-muted-foreground">和</span><Button type="button" variant="link" className="h-auto p-0 text-sm" onClick={()=>setDocType('privacy')}>《隐私说明》</Button></div>
@@ -227,7 +226,7 @@ function Login({onLogin,theme}:{onLogin:()=>void,theme:ReturnType<typeof useThem
        {docType==='terms'?(
         <>
          <p>1. <strong>开源本地工具</strong>：「题了个题（StudyOnTV）」是运行在家庭设备上的本地助学与可选屏幕时间管理工具，家长请合理设置学习任务与休息时长。</p>
-         <p>2. <strong>适用模式</strong>：支持「纯粹学习提分模式」（无需锁屏权限）与「先学再看管控模式」。开启设备管控前，请确保您对所管理设备拥有合法监护或管理权限。</p>
+         <p>2. <strong>适用模式</strong>：支持「只学习，不锁屏」（无需锁屏权限）与「先答题，再看电视」管控模式。开启设备管控前，请确保您对所管理设备拥有合法监护或管理权限。</p>
          <p>3. <strong>密码与备份</strong>：管理密码保存在被控设备本地，建议定期在「设置 → 设备」导出整机备份以便换机恢复。</p>
         </>
        ):(
@@ -313,11 +312,11 @@ function Dashboard({sessionId,logout,onSwitchHost,theme}:{sessionId:number,logou
  const connected=!state.error;
  const localOnly=!!device.data?.localOnly;
  const updateChecked=useRef(false);
- // 打开家长后台时自动检查一次版本；纯本地版跳过，有新版本才提示
+ // 打开家长后台时自动检查一次版本；开启后台自动下载时等安装包下载就绪后再弹提示
  useEffect(()=>{
   if(!device.data||device.data.localOnly||updateChecked.current)return;
   updateChecked.current=true;
-  let stop=false;let tries=0;
+  let stop=false;let tries=0;let idleMisses=0;
   api('/api/update/check','POST',{}).catch(()=>{});
   const timer=setInterval(async()=>{
    tries++;
@@ -325,13 +324,13 @@ function Dashboard({sessionId,logout,onSwitchHost,theme}:{sessionId:number,logou
     const u=await api('/api/update');
     if(stop)return;
     if(!u.checking){
-     clearInterval(timer);
-     if(u.hasUpdate&&u.latest){
-      toast.message(`发现新版本 v${u.latest}，请升级`,{action:{label:'去更新',onClick:()=>go('settings','update')}});
-     }
+     if(!u.hasUpdate||!u.latest){clearInterval(timer);return;}
+     if(u.apkReady){clearInterval(timer);toast.message(`新版本 v${u.latest} 已下载好`,{action:{label:'立即安装',onClick:()=>go('settings','update')}});return;}
+     if(!u.autoDownload){clearInterval(timer);toast.message(`发现新版本 v${u.latest}，请升级`,{action:{label:'去更新',onClick:()=>go('settings','update')}});return;}
+     if(u.installState!=='downloading'&&++idleMisses>=2){clearInterval(timer);return;}
     }
    }catch{}
-   if(tries>=20)clearInterval(timer);
+   if(tries>=90)clearInterval(timer);
   },2500);
   return()=>{stop=true;clearInterval(timer);};
  },[device.data?.localOnly,!!device.data]);

@@ -53,4 +53,68 @@ class BankAutomationAndMarketTest {
         )
         assertEquals("自动补题失败，已有题目保留", withoutDetail)
     }
+
+    @Test
+    fun bankAutomationDetectsPermanentFailuresAndBacksOffTransientErrors() {
+        assertTrue(BankAutomation.isPermanentAutoAiFailure(IllegalStateException("API Key 无效或没有权限，请检查密钥是否填写正确")))
+        assertTrue(BankAutomation.isPermanentAutoAiFailure(IllegalStateException("账户余额不足，请先到服务商平台充值后再试")))
+        assertTrue(BankAutomation.isPermanentAutoAiFailure(IllegalStateException("接口地址或模型名称不存在（HTTP 404）")))
+        assertFalse(BankAutomation.isPermanentAutoAiFailure(IllegalStateException("连接 api.deepseek.com 超时")))
+        assertFalse(BankAutomation.isPermanentAutoAiFailure(IllegalStateException("模型没有按要求返回 JSON：")))
+
+        assertEquals(15 * 60_000L, BankAutomation.computeAutoAiBackoffMs(1))
+        assertEquals(30 * 60_000L, BankAutomation.computeAutoAiBackoffMs(2))
+        assertEquals(60 * 60_000L, BankAutomation.computeAutoAiBackoffMs(3))
+        assertEquals(120 * 60_000L, BankAutomation.computeAutoAiBackoffMs(4))
+        assertEquals(240 * 60_000L, BankAutomation.computeAutoAiBackoffMs(5))
+        assertEquals(240 * 60_000L, BankAutomation.computeAutoAiBackoffMs(10))
+    }
+
+    @Test
+    fun updateInstallReceiverClassifiesUserCancellationInsteadOfIncompatible() {
+        val canceled = UpdateInstallReceiver.formatInstallFailure(
+            android.content.pm.PackageInstaller.STATUS_FAILURE_INCOMPATIBLE,
+            "INSTALL_FAILED_USER_RESTRICTED: Failed INSTALL_CANCELED_BY_USER"
+        )
+        assertTrue("Expected cancel prompt, got: $canceled", canceled.contains("取消") || canceled.contains("权限"))
+        assertFalse("Must not falsely claim incompatible: $canceled", canceled.contains("不兼容"))
+
+        val rejected = UpdateInstallReceiver.formatInstallFailure(
+            android.content.pm.PackageInstaller.STATUS_FAILURE_ABORTED,
+            "INSTALL_FAILED_ABORTED: User rejected permissions"
+        )
+        assertTrue(rejected.contains("取消") || rejected.contains("权限"))
+
+        val permDenied = UpdateInstallReceiver.formatInstallFailure(
+            1,
+            "INSTALL_FAILED_INTERNAL_ERROR: Permission Denied"
+        )
+        assertTrue(permDenied.contains("未知来源") || permDenied.contains("权限"))
+
+        val realIncompat = UpdateInstallReceiver.formatInstallFailure(
+            android.content.pm.PackageInstaller.STATUS_FAILURE_INCOMPATIBLE,
+            "INSTALL_FAILED_NO_MATCHING_ABIS"
+        )
+        assertTrue(realIncompat.contains("不兼容"))
+    }
+
+    @Test
+    fun webShellDetectsMissingWebViewCauseChain() {
+        val leaf = RuntimeException("android.webkit.WebViewFactory\$MissingWebViewPackageException: com.google.android.webview")
+        val wrapped = RuntimeException("Unable to start activity", leaf)
+        assertTrue(WebShell.isWebViewUnavailable(wrapped))
+        assertTrue(WebShell.isWebViewUnavailable(UnsatisfiedLinkError("libwebviewchromium.so")))
+        assertFalse(WebShell.isWebViewUnavailable(IllegalStateException("normal runtime error")))
+    }
+
+    @Test
+    fun overlayAccessDeduplicatesRepeatedProbeWarningsUntilOutcomeChanges() {
+        OverlayAccess.invalidate()
+        assertTrue(OverlayAccess.shouldLogProbeOutcome("fail:bad-token:err"))
+        assertFalse(OverlayAccess.shouldLogProbeOutcome("fail:bad-token:err"))
+        assertTrue(OverlayAccess.shouldLogProbeOutcome("ok:true:TYPE_APPLICATION_OVERLAY"))
+        assertFalse(OverlayAccess.shouldLogProbeOutcome("ok:true:TYPE_APPLICATION_OVERLAY"))
+        OverlayAccess.invalidate()
+        assertTrue(OverlayAccess.shouldLogProbeOutcome("ok:true:TYPE_APPLICATION_OVERLAY"))
+    }
 }

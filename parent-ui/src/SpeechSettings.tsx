@@ -18,7 +18,7 @@ const modeLabels:Record<string,string>={system:'本地系统语音',edge:'微软
 // 每种通路一句话说清区别和前提，家长不用猜为什么点朗读没声音（#128）
 const modeHints:Record<string,string>={
  system:'不需要网络，但电视可能没装中文语音包；读不出声音时点下面的「检测本地语音」',
- edge:'免费在线朗读（无需 API Key），失败会自动回落系统语音；该通路依赖微软在线接口，部分网络可能 403，建议同时安装本地中文语音包或配置 DeepSeek 语音',
+ edge:'免费在线朗读（无需 API Key），失败会自动回落系统语音；该方式依赖微软在线接口，部分网络可能 403，建议同时安装本地中文语音包或配置 DeepSeek 语音',
  auto:'有云端 Key 就用云端；没有 Key 时优先用本地语音，无本地语音则自动用免费 Edge 语音',
  deepseek:'效果最好，需要 DeepSeek Key；电视没有本地语音时选这个',
  azure:'需要 Azure 语音服务的区域和 Key',
@@ -34,14 +34,14 @@ const readLanguageValue=(value:any)=>(readLanguages.some(([v])=>v===value)?value
 /** 朗读内容：只读题干、题干加选项、再加正确答案（答案在作答之后再读，作答前不剧透） */
 const readScopes:[string,string][]=[['question','只读题目'],['questionOptions','题目和选项'],['questionOptionsAnswer','题目、选项和答案']];
 const readScopeValue=(value:any)=>(readScopes.some(([v])=>v===value)?value:'question');
-const labels:Record<string,string>={azureRegion:'Azure 区域',azureVoice:'Azure 音色',azureKey:'Azure Key',aliyunAppKey:'阿里云 AppKey',aliyunAccessKeyId:'阿里云 AccessKey ID',aliyunSecret:'阿里云 AccessKey Secret',aliyunVoice:'阿里云音色',deepseekKey:'DeepSeek API Key',deepseekVoice:'DeepSeek 音色',recognizeMode:'语音识别通路'};
+const labels:Record<string,string>={azureRegion:'Azure 区域',azureVoice:'Azure 音色',azureKey:'Azure Key',aliyunAppKey:'阿里云 AppKey',aliyunAccessKeyId:'阿里云 AccessKey ID',aliyunSecret:'阿里云 AccessKey Secret',aliyunVoice:'阿里云音色',deepseekKey:'DeepSeek API Key',deepseekVoice:'DeepSeek 音色',recognizeMode:'语音答题识别'};
 const azureFields=['azureRegion','azureVoice','azureKey'],aliyunFields=['aliyunAppKey','aliyunAccessKeyId','aliyunSecret','aliyunVoice'],deepseekFields=['deepseekKey','deepseekVoice'];
 
 function validate(form:any){
  const errors:Record<string,string>={};
- if(!modes.includes(form.mode))errors.mode='请选择有效的朗读通路';
+ if(!modes.includes(form.mode))errors.mode='请选择有效的朗读声音来源';
  if(String(form.readLanguage??'')!=='' && readLanguageValue(form.readLanguage)==='auto')errors.readLanguage='请选择有效的朗读语言';
- if(form.recognizeMode&&!recognizeModes.some(([value])=>value===form.recognizeMode))errors.recognizeMode='请选择有效的语音识别通路';
+ if(form.recognizeMode&&!recognizeModes.some(([value])=>value===form.recognizeMode))errors.recognizeMode='请选择有效的语音识别方式';
  if(form.deepseekVoice&&!deepseekVoices.some(([value])=>value===form.deepseekVoice))errors.deepseekVoice='请选择有效的 DeepSeek 音色';
  if(form.readScope&&!readScopes.some(([value])=>value===form.readScope))errors.readScope='请选择有效的朗读内容';
  for(const key of [...azureFields,...aliyunFields,...deepseekFields]){
@@ -82,7 +82,7 @@ export default function SpeechSettings({sessionId}:{sessionId:number}){
   try{
    const result=await api('/api/speech/test','POST',{text:'今天天气不错'});
    const ok=result?.ok!==false&&result?.reason!=='engine-unavailable';
-   setProbe((old:any)=>({...old,testOk:ok,testHint:ok?'已让电视读一句：听到声音就说明这条通路能用':`朗读失败：${result?.message||result?.reason||'未知原因'}`}));
+   setProbe((old:any)=>({...old,testOk:ok,testHint:ok?'已让电视读一句：听到声音就说明当前设置能正常朗读':`朗读失败：${result?.message||result?.reason||'未知原因'}`}));
   }catch(e:any){setProbe((old:any)=>({...old,testOk:false,testHint:'测试失败：'+(e?.message||'请重试')}));}
   finally{setTesting(false);}
  };
@@ -167,10 +167,10 @@ export default function SpeechSettings({sessionId}:{sessionId:number}){
      </ItemActions>
     </Item>
     <Item size="sm" className="rounded-none px-0 py-4" data-invalid={!!errors.mode}>
-     <ItemContent><ItemTitle>朗读通路</ItemTitle><ItemDescription className="text-xs">{modeHints[form.mode]||'自动优先使用已配置的云端密钥。'}</ItemDescription><FieldError>{errors.mode}</FieldError></ItemContent>
+     <ItemContent><ItemTitle>朗读声音来源</ItemTitle><ItemDescription className="text-xs">{modeHints[form.mode]||'自动优先使用已配置的云端密钥。'}</ItemDescription><FieldError>{errors.mode}</FieldError></ItemContent>
      <ItemActions>
      <Select value={form.mode} onValueChange={value=>change('mode',value)}>
-      <SelectTrigger aria-label="朗读通路" aria-invalid={!!errors.mode} className="w-full sm:w-44"><SelectValue>{modeLabels[form.mode]||'请选择'}</SelectValue></SelectTrigger>
+      <SelectTrigger aria-label="朗读声音来源" aria-invalid={!!errors.mode} className="w-full sm:w-44"><SelectValue>{modeLabels[form.mode]||'请选择'}</SelectValue></SelectTrigger>
       <SelectContent>{modes.map(value=><SelectItem key={value} value={value}>{modeLabels[value]}</SelectItem>)}</SelectContent>
      </Select>
      </ItemActions>
@@ -204,16 +204,16 @@ export default function SpeechSettings({sessionId}:{sessionId:number}){
      </details>}
     </div>
     <Item size="sm" className="rounded-none px-0 py-4" data-invalid={!!errors.recognizeMode}>
-     <ItemContent><ItemTitle>语音识别通路</ItemTitle><ItemDescription className="text-xs">电视上答口语题时用。华为、TCL 这类电视常常没有系统识别，填了 DeepSeek Key 会自动用它。</ItemDescription><FieldError>{errors.recognizeMode}</FieldError></ItemContent>
+     <ItemContent><ItemTitle>语音答题识别</ItemTitle><ItemDescription className="text-xs">孩子开口答口语题时用。华为、TCL 等电视常缺少系统识别，填了 DeepSeek Key 会自动用它。</ItemDescription><FieldError>{errors.recognizeMode}</FieldError></ItemContent>
      <ItemActions>
      <Select value={form.recognizeMode||'system'} onValueChange={value=>change('recognizeMode',value)}>
-      <SelectTrigger aria-label="语音识别通路" aria-invalid={!!errors.recognizeMode} className="w-full sm:w-44"><SelectValue>{recognizeModes.find(([value])=>value===(form.recognizeMode||'system'))?.[1]}</SelectValue></SelectTrigger>
+      <SelectTrigger aria-label="语音答题识别" aria-invalid={!!errors.recognizeMode} className="w-full sm:w-44"><SelectValue>{recognizeModes.find(([value])=>value===(form.recognizeMode||'system'))?.[1]}</SelectValue></SelectTrigger>
       <SelectContent>{recognizeModes.map(([value,label])=><SelectItem key={value} value={value}>{label}</SelectItem>)}</SelectContent>
      </Select>
      </ItemActions>
     </Item>
     {form.mode==='auto'&&<div className="py-3 text-xs leading-5 text-muted-foreground">
-     自动模式：已配置 DeepSeek Key 时自动使用 DeepSeek 语音，否则优先本地系统语音，无本地语音时自动回落免费 Edge 语音。如需单独配置云端密钥，请切换上方朗读通路。
+     自动模式：已配置 DeepSeek Key 时自动使用 DeepSeek 语音，否则优先本地系统语音，无本地语音时自动回落免费 Edge 语音。如需单独配置云端密钥，请切换上方「朗读声音来源」。
     </div>}
     {edgeVisible&&<div className="py-4">
      <Field>
@@ -248,7 +248,7 @@ export default function SpeechSettings({sessionId}:{sessionId:number}){
     </div>}
     {azureVisible&&<div className="grid gap-4 py-4 sm:grid-cols-2">{input('azureRegion','Azure 区域，例如 eastasia')}{input('azureVoice','Azure 音色（可留空）')}{input('azureKey','Azure Key',true)}</div>}
     {aliyunVisible&&<div className="grid gap-4 py-4 sm:grid-cols-2">{input('aliyunAppKey','阿里云 AppKey')}{input('aliyunAccessKeyId','阿里云 AccessKey ID')}{input('aliyunSecret','阿里云 AccessKey Secret',true)}{input('aliyunVoice','阿里云音色，例如 xiaoyun')}</div>}
-    {hiddenErrors.length>0&&<div className="py-3"><FieldError>切回对应朗读通路后修正：{hiddenErrors.map(([key,message])=>`${labels[key]||key}：${message}`).join('；')}</FieldError></div>}
+    {hiddenErrors.length>0&&<div className="py-3"><FieldError>切回对应声音来源后修正：{hiddenErrors.map(([key,message])=>`${labels[key]||key}：${message}`).join('；')}</FieldError></div>}
     {((!query.data&&query.isError)||saveError)&&<div className="flex flex-wrap items-center justify-between gap-2 py-3">
      <FieldError>{!query.data?'无法读取朗读设置，暂时不能修改。':saveError}</FieldError>
      {/* 读不到设置时不能拿默认值去覆盖设备，只能重新拉；存失败则原样重试一次 */}

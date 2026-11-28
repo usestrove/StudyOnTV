@@ -189,7 +189,7 @@ function formatState(state) {
 
   const override = learning.override;
   if (override && override.mode === "unlock") {
-    lines.push(`临时解锁剩余：${formatDuration(override.remainingSeconds)}`);
+    lines.push(override.untilShutdown ? "临时解锁：到本次关机" : `临时解锁剩余：${formatDuration(override.remainingSeconds)}`);
   } else if (override && override.mode === "lock") {
     lines.push("家长锁定：等待 /cancel 或到点解除");
   } else if (override && override.mode === "indefinite") {

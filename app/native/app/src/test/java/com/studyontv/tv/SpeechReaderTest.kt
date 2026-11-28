@@ -1,5 +1,6 @@
 package com.studyontv.tv
 
+import android.media.AudioAttributes
 import android.media.AudioTrack
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -183,5 +184,58 @@ class SpeechReaderTest {
         // clearKeys=true alone: removes all keys.
         SpeechReader.applySpeechKeyMutations(next, org.json.JSONObject().put("clearKeys", true))
         assertFalse(next.has("deepseekKey"))
+    }
+
+    @Test
+    fun resolveAudioUsageRoutesAroundMutedMusicStreamOnlyWhenMediaPauseMutedIt() {
+        // Music stream NOT muted: always keep USAGE_MEDIA (preserves Huawei/TCL HDMI speaker routing).
+        assertEquals(
+            AudioAttributes.USAGE_MEDIA,
+            SpeechAudioPlayer.resolveAudioUsage(
+                musicMuted = false,
+                sdkInt = 31,
+                accessibilityAudible = true,
+                alarmAudible = true,
+                notificationAudible = true
+            )
+        )
+
+        // Music muted on API 26+ with audible accessibility stream -> USAGE_ASSISTANCE_ACCESSIBILITY (#196).
+        assertEquals(
+            AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY,
+            SpeechAudioPlayer.resolveAudioUsage(
+                musicMuted = true,
+                sdkInt = 26,
+                accessibilityAudible = true,
+                alarmAudible = true,
+                notificationAudible = true
+            )
+        )
+
+        // Music muted on API 25 (no STREAM_ACCESSIBILITY) -> falls back to USAGE_ALARM.
+        assertEquals(
+            AudioAttributes.USAGE_ALARM,
+            SpeechAudioPlayer.resolveAudioUsage(
+                musicMuted = true,
+                sdkInt = 25,
+                accessibilityAudible = true,
+                alarmAudible = true,
+                notificationAudible = true
+            )
+        )
+
+        // Accessibility muted/zero -> USAGE_ALARM; alarm also muted -> USAGE_NOTIFICATION; none audible -> USAGE_MEDIA.
+        assertEquals(
+            AudioAttributes.USAGE_ALARM,
+            SpeechAudioPlayer.resolveAudioUsage(true, 31, false, true, true)
+        )
+        assertEquals(
+            AudioAttributes.USAGE_NOTIFICATION,
+            SpeechAudioPlayer.resolveAudioUsage(true, 31, false, false, true)
+        )
+        assertEquals(
+            AudioAttributes.USAGE_MEDIA,
+            SpeechAudioPlayer.resolveAudioUsage(true, 31, false, false, false)
+        )
     }
 }

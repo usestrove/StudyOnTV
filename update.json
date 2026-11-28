@@ -1,21 +1,28 @@
 {
-  "version": "0.5.8",
-  "versionCode": 55,
+  "version": "0.5.14",
+  "versionCode": 61,
   "force": false,
-  "notes": "v0.5.8\n\n- **题目解析朗读**：开启自动朗读后，答题反馈及闪卡/错题翻面均自动朗读题目解析；手动点击「朗读」按钮也会一并朗读答案与解析（合并 #191 英文题标点防重读修复）。\n- **在线更新修复（#189）**：融合 #190 并新增 JAR 证书读取兜底，修复 Android 9/10 设备在线更新误报「安装包签名与当前版本不一致，已拒绝」；修复版本更新页将「蒲公英：当前已是最新版本」误报为「上次检查没成功」的问题。\n- **答题端电视/触屏交互优化**：修复切换孩子 PIN 弹窗焦点冲突（电视 D-Pad 可正常选数字、手机不再拉起系统键盘遮挡按键）；纯粹学习模式新增「返回学习中心」入口并支持返回键退出；强化电视焦点框可见度与触控胶囊高度。\n- **家长端多设备排版优化**：修复手机窄屏下后台保活状态标签竖排挤压、深色模式禁用主按钮低对比度、iPad 1024px 横屏设置页三栏挤压，以及触控平板每周时段表自动默认竖排。\n- **国际化贡献（#193）**：新增越南语（Tiếng Việt）README 与 Home Assistant 集成翻译。",
-  "publishedAt": "2026-11-25T22:52:40.455Z",
+  "notes": "v0.5.14\n\n- 修复 App 内导入题库与选择文件无反应：为主应用「本机打开管理面板」补齐 WebView 文件选择器（含选文件放行锁屏与防超时重建）；修复独立家长端 App 因窄 MIME 过滤导致 Word / PDF / TXT / JSON 在国产文件管理器中置灰不可选的问题，并补齐文件选择器回退链、老旧 WebView FileReader 兜底与空文本点击提示。\n- 独立家长端 App（:parent）接入运行/崩溃日志与自动上报：保持零三方依赖与零敏感权限红线（仅 INTERNET + ACCESS_NETWORK_STATE），自动捕获崩溃与 WebView JS 报错 / 文件选择器 / 局域网发现 / 无线 ADB 诊断日志并定时上报，点击首页右上角版本号可手动上报或关闭自动上报。\n- 独立家长端 App 接入自动检查更新：启动自动检测新版并在首页展示轻提示卡片，点击跳转到蒲公英下载页手动覆盖安装（保留已保存设备与登录状态）；发版流水线同步将家长端 APK 上传至蒲公英并写入 update.json。",
+  "publishedAt": "2026-11-28T12:55:45.342Z",
   "assets": {
     "tv": {
-      "name": "StudyOnTV-Android-TV-v0.5.8.apk",
-      "url": "https://github.com/chadyi/StudyOnTV/releases/download/v0.5.8/StudyOnTV-Android-TV-v0.5.8.apk",
-      "sha256": "caa2fb69e2390491776e4f4edd7f1e6d992abfd3abbaf7661d88dcb0bfd5e13d",
-      "size": 3575675
+      "name": "StudyOnTV-Android-TV-v0.5.14.apk",
+      "url": "https://github.com/chadyi/StudyOnTV/releases/download/v0.5.14/StudyOnTV-Android-TV-v0.5.14.apk",
+      "sha256": "023594e944af4bb2f8ef5fc9332514721a781ef92305e24e9031cbdbe139fff7",
+      "size": 3625778
     },
     "mobile": {
-      "name": "StudyOnTV-Mobile-v0.5.8.apk",
-      "url": "https://github.com/chadyi/StudyOnTV/releases/download/v0.5.8/StudyOnTV-Mobile-v0.5.8.apk",
-      "sha256": "d2ecfdb5b6adf0f9051f1893a9122ed9c639514e543cbed9cd3d8f99f978f56d",
-      "size": 3577281
+      "name": "StudyOnTV-Mobile-v0.5.14.apk",
+      "url": "https://github.com/chadyi/StudyOnTV/releases/download/v0.5.14/StudyOnTV-Mobile-v0.5.14.apk",
+      "sha256": "58b29ba98469a3b8028a0a2088623cbee535d234ddff243448d6c7ff90e13bcd",
+      "size": 3628604
+    },
+    "parent": {
+      "name": "StudyOnTV-Parent-v0.5.14.apk",
+      "url": "https://github.com/chadyi/StudyOnTV/releases/download/v0.5.14/StudyOnTV-Parent-v0.5.14.apk",
+      "sha256": "19c4c33b00b55d381cd99a754676849e20d6d6ca8b8721dff2230031f6c36c39",
+      "size": 746457,
+      "pgyerUrl": "https://www.pgyer.com/tilegetijiazhangduan"
     }
   }
 }

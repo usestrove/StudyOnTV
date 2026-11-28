@@ -8,6 +8,7 @@ import org.json.JSONObject
 
 /** 无第三方测试依赖；只使用独立数据库，不修改家庭题库。 */
 class RegressionInstrumentation : Instrumentation() {
+    private var clockQuota = false
     private var probe = false
     private var video = false
     private var children = false
@@ -17,9 +18,11 @@ class RegressionInstrumentation : Instrumentation() {
     private var homeUi = false
     private var freeQuotaGate = false
     private var st60x = false
+    private var remoteOverride = false
     private var videoUrl = ""
     override fun onCreate(arguments: Bundle?) {
         super.onCreate(arguments)
+        clockQuota = arguments?.getString("clockQuota") == "1"
         probe = arguments?.getString("probe") == "1"
         video = arguments?.getString("video") == "1"
         children = arguments?.getString("children") == "1"
@@ -29,12 +32,24 @@ class RegressionInstrumentation : Instrumentation() {
         homeUi = arguments?.getString("homeUi") == "1"
         freeQuotaGate = arguments?.getString("freeQuotaGate") == "1"
         st60x = arguments?.getString("st60x") == "1"
+        remoteOverride = arguments?.getString("remoteOverride") == "1"
         videoUrl = arguments?.getString("url") ?: ""
         start()
     }
 
     override fun onStart() {
         val results = Bundle()
+        if (clockQuota) {
+            try {
+                FeatureRegression.clockQuota(targetContext)
+                results.putString("stream", "PASS: 免费时长间隔、网络校时、日期回拨、跨午夜结算与备份合并\n")
+                finish(Activity.RESULT_OK, results)
+            } catch (e: Throwable) {
+                results.putString("stream", android.util.Log.getStackTraceString(e))
+                finish(Activity.RESULT_CANCELED, results)
+            }
+            return
+        }
         if (st60x) {
             try {
                 results.putString("stream", St60xApiRegression.run(targetContext) + "\n")
@@ -45,9 +60,13 @@ class RegressionInstrumentation : Instrumentation() {
             }
             return
         }
-        if (home || homeUi || freeQuotaGate) {
+        if (home || homeUi || freeQuotaGate || remoteOverride) {
             try {
                 val output = when {
+                    remoteOverride -> {
+                        RemoteOverrideRegression.run(targetContext)
+                        "PASS: 到本次关机解锁、待机与应用重建、不扣余额、断电/重启恢复、孩子隔离、无法识别开机时恢复规则、手动取消及旧定时操作\n"
+                    }
                     freeQuotaGate -> HomeNavigationUiRegression.freeQuotaGate(this)
                     homeUi -> HomeNavigationUiRegression.run(this)
                     else -> {
@@ -173,6 +192,7 @@ class RegressionInstrumentation : Instrumentation() {
             GatePresentationRegression.run(targetContext)
             VendorFixRegression.run(targetContext)
             TimePointsRegression.run(targetContext)
+            RemoteOverrideRegression.run(targetContext)
             results.putString("stream", "PASS: 新需求回归（加减时、开机额度、持久休息、年级、简单模式、解析停留、统计、多题库、密钥设置）及既有回归；免费额度即时调整、重复保存、上下限、时段、跨天；100 次单选/多选答案映射、判断题；清空含暂停题及复习进度；前台包名/Activity 配对与清理；#110 静音与弹窗同源；#17 休息死区与面板扣时同口径；#93 前台不返回自身包名与陈旧缓存；#92 悬浮窗真实 addView 探针；#106/#87/#81 AI 密钥不回显、朗读语言回落与失败回报、朗读内容范围与非法值拒绝；#112 网课时段分钟边界/跨午夜/多天、free 不扣时、counted 换上限、豁免优先、旧配置不回归与保存校验；#136 错题记录、错题优先排序与加练从错题库出、答对后出库；覆盖优先（排序、覆盖率统计、错题优先压过覆盖优先）；题库页服务端分页与筛选（题库/题型列、搜索通配符转义、题库页计数、bank/type 升级回填）；系统设置识别与临时放行、静音计时随服务重建清零；隐藏桌面图标（alias 开关、主界面不受影响）；时区（可用时段与「今天」按配置时区、未知时区拒绝、下次可用文案）、学习页可用时段文案按周计划生成与官方题库 Gitee 镜像回退；朗读 WAV 解析（DeepSeek 返回 PCM，华为设备不再依赖 MediaPlayer）\n")
             finish(Activity.RESULT_OK, results)
         } catch (e: Throwable) {

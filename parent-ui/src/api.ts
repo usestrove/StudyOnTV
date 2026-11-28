@@ -1,4 +1,11 @@
-export const SESSION_STORAGE_KEY = 'sotv-panel-session';
+import {
+  SESSION_STORAGE_KEY,
+  forgetHostSession,
+  getRememberPreference,
+  saveHostSession,
+} from './session-storage';
+
+export { SESSION_STORAGE_KEY };
 
 let previewMode = false;
 export function enablePreview() {
@@ -47,20 +54,18 @@ export function getApiOrigin(): string {
   return `${scheme}//${host}`;
 }
 
-export function setToken(value: string) {
+export function setToken(value: string, persist?: boolean) {
   token = value;
-  try {
-    if (typeof localStorage !== 'undefined') {
-      if (value) {
-        const storedHost = getHost();
-        if (storedHost) {
-          localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify({ host: storedHost, token: value }));
-        }
-      } else {
-        localStorage.removeItem(SESSION_STORAGE_KEY);
-      }
+  if (persist === false) return;
+  const storedHost = getHost();
+  if (!storedHost) return;
+  if (value) {
+    if (persist === true || getRememberPreference()) {
+      saveHostSession(storedHost, value, true);
     }
-  } catch {}
+  } else {
+    forgetHostSession(storedHost);
+  }
 }
 
 export function resolveMediaUrl(src: string): string {

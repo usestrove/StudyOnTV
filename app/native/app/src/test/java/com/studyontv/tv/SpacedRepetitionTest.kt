@@ -78,6 +78,8 @@ class SpacedRepetitionTest {
         assertNull(LanServer.allowedCorsOrigin("http://172.32.0.1:8099"))
 
         assertTrue(LanServer.isDeviceRouteAllowed("GET", "/api/state"))
+        assertTrue(LanServer.isDeviceRouteAllowed("GET", "/api/learning/state"))
+        assertFalse(LanServer.isDeviceRouteAllowed("POST", "/api/learning/state"))
         assertTrue(LanServer.isDeviceRouteAllowed("POST", "/api/quiz/start"))
         assertTrue(LanServer.isDeviceRouteAllowed("POST", "/api/quiz/memorized"))
         assertTrue(LanServer.isDeviceRouteAllowed("POST", "/api/quiz/rate"))

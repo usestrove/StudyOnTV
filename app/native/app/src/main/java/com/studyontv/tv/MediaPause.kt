@@ -22,6 +22,9 @@ object MediaPause {
     // HDMI 固定音量 / 部分 Amlogic 盒子会读到 volume=0（甚至 isStreamMute=true）但实际有声音，
     // 在这种设备上 mute 可能把整机声音锁死，解锁后也不再恢复（issue #116 天猫魔盒 M16S）。
     private var canMute = false
+    // 少数厂商定制固件在调用 adjustStreamVolume 时会抛出 SecurityException(UPDATE_DEVICE_STATS)，
+    // 一旦触发立刻熔断静音降级，避免解锁/轮询反复重试刷屏。
+    @Volatile private var muteDeniedBySystem = false
     val active: Boolean get() = owners.isNotEmpty()
     /** 静音持有者数量；诊断用（>1 时说明有多个 Context 各自持有） */
     val ownerCount: Int get() = owners.size
@@ -67,6 +70,42 @@ object MediaPause {
         else audio.setStreamMute(AudioManager.STREAM_MUSIC, value)
     }
 
+    private fun clearMuteRecord(context: Context) {
+        prefs(context).edit().remove("media_muted").remove("media_original_volume").remove("media_original_muted")
+            .remove("media_user_touched").remove("media_user_volume").remove("media_restore_attempts").commit()
+    }
+
+    private fun markMuteDenied(context: Context, where: String, error: SecurityException) {
+        val first = !muteDeniedBySystem
+        muteDeniedBySystem = true
+        canMute = false
+        muted = false
+        clearMuteRecord(context)
+        if (first) {
+            Diag.warn("Audio", "volume control denied by firmware in $where (${error.message.orEmpty().take(120)}), disabling mute fallback")
+        }
+    }
+
+    internal fun computePreRestoreVolume(originallyMuted: Boolean, touched: Boolean, savedVolume: Int, current: Int): Int? =
+        if (!originallyMuted && !touched && savedVolume > 0 && current <= 0) savedVolume else null
+
+    internal fun computePostUnmuteVolume(
+        originallyMuted: Boolean,
+        preWrote: Boolean,
+        touched: Boolean,
+        savedVolume: Int,
+        userVolume: Int,
+        nowVolume: Int
+    ): Int? {
+        if (originallyMuted) return null
+        if (touched && userVolume > 0 && nowVolume != userVolume && (nowVolume <= 0 || nowVolume == savedVolume)) {
+            return userVolume
+        }
+        // 未执行过音量写回时，按当前档位幂等回写一次，刷新 Sony BRAVIA 等固件底层 audio_hal 的通道静音状态（#197）
+        if (!preWrote && nowVolume > 0) return nowVolume
+        return null
+    }
+
     @Synchronized
     @Suppress("DEPRECATION")
     fun pause(context: Context) {
@@ -77,7 +116,7 @@ object MediaPause {
         try {
             originalVolume = audio.getStreamVolume(AudioManager.STREAM_MUSIC)
             originalMuted = if (Build.VERSION.SDK_INT >= 23) audio.isStreamMute(AudioManager.STREAM_MUSIC) else originalVolume == 0
-            canMute = originalVolume > 0 && !originalMuted
+            canMute = !muteDeniedBySystem && originalVolume > 0 && !originalMuted
             attempts = 0
             lastKey = SystemClock.elapsedRealtime()
             lastPauseAt = lastKey
@@ -133,6 +172,8 @@ object MediaPause {
             muted = true
             setMuted(audio, true)
             Diag.warn("Audio", "enforce: player ignored pause, muted music stream (original volume=$originalVolume, originally muted=$originalMuted)")
+        } catch (e: SecurityException) {
+            markMuteDenied(context, "enforce", e)
         } catch (e: Exception) { android.util.Log.w("StudyOnTV", "Enforce pause failed", e) }
     }
 
@@ -158,10 +199,11 @@ object MediaPause {
             // 静音只是把流静掉，音量档位一般不动；只有读回 0（少数电视静音时把档位写成 0）
             // 才需要把原值写回去。用户自己动过音量时一律不写，否则会把孩子/家长刚调低的
             // 音量顶回静音前的旧值（用户反馈：音量卡在 17，调低又自动恢复）。
-            val writeVolume = !originallyMuted && !touched && savedVolume > 0 && current <= 0
-            if (writeVolume) {
+            val preWriteVolume = computePreRestoreVolume(originallyMuted, touched, savedVolume, current)
+            val writeVolume = preWriteVolume != null
+            if (preWriteVolume != null) {
                 audio.setStreamVolume(AudioManager.STREAM_MUSIC,
-                    savedVolume.coerceIn(0, audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC)), 0)
+                    preWriteVolume.coerceIn(0, audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC)), 0)
             }
             if (!originallyMuted) {
                 // 只解除我们自己的静音；本来静音的流不动，避免覆盖用户设置。
@@ -169,14 +211,17 @@ object MediaPause {
                 // 部分电视（小米 / Amlogic 等）对 ADJUST_UNMUTE 的响应不稳定，
                 // 额外调用一次 setStreamMute(false) 兜底。
                 if (Build.VERSION.SDK_INT >= 23) try { audio.setStreamMute(AudioManager.STREAM_MUSIC, false) } catch (_: Exception) { }
-                // 有的电视解除静音时会把档位弹回静音前的值（甚至归 0）：用户在静音期间
-                // 调过音量时，只在「读数没回来」或「正好弹回旧值」这两种情况下放回用户的音量，
-                // 不去覆盖静音结束后用户自己的调整。
+                // 有的电视解除静音时会把档位弹回静音前的值（甚至归 0），Sony BRAVIA 等机型则需要
+                // 一次按当前档位的幂等 setStreamVolume 触发 audio_hal 刷新通道静音状态（#197）。
                 val nowVolume = audio.getStreamVolume(AudioManager.STREAM_MUSIC)
-                if (touched && userVolume > 0 && nowVolume != userVolume &&
-                    (nowVolume <= 0 || nowVolume == savedVolume)) {
-                    audio.setStreamVolume(AudioManager.STREAM_MUSIC,
-                        userVolume.coerceIn(0, audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC)), 0)
+                val postWriteVolume = computePostUnmuteVolume(originallyMuted, writeVolume, touched, savedVolume, userVolume, nowVolume)
+                if (postWriteVolume != null) {
+                    try {
+                        audio.setStreamVolume(AudioManager.STREAM_MUSIC,
+                            postWriteVolume.coerceIn(0, audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC)), 0)
+                    } catch (e: SecurityException) {
+                        throw e
+                    } catch (_: Exception) { }
                 }
                 // 新版 Android 会限制非前台应用改音量；如果这次没生效，保留记录，
                 // 等 Activity 回到前台或下一次 tick 再试，不能把恢复机会一起清掉。
@@ -199,10 +244,12 @@ object MediaPause {
                     Diag.warn("Audio", "restore gave up after $tries tries (saved=$savedVolume volume=$restoredVolume stillMuted=$stillMuted)")
                 }
             }
-            state.edit().remove("media_muted").remove("media_original_volume").remove("media_original_muted")
-                .remove("media_user_touched").remove("media_user_volume").remove("media_restore_attempts").commit()
+            clearMuteRecord(context)
             muted = false
             Diag.info("Audio", "restored volume=$savedVolume wasMuted=$wasMuted originallyMuted=$originallyMuted touched=$touched userVolume=$userVolume holding=$holding")
+            true
+        } catch (e: SecurityException) {
+            markMuteDenied(context, "restore", e)
             true
         } catch (e: Exception) {
             android.util.Log.w("StudyOnTV", "Restore media volume failed", e)
